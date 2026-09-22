@@ -217,7 +217,31 @@ PowerShell 用 GBK 读 UTF-8。⇒ **传到 Windows 侧的配置文件、脚本�
 处置：**运行时临时摘掉代理环境变量**（`unset http_proxy https_proxy all_proxy`），
 **不要去改那台机器的代理配置** —— 那是用户自己在用的。
 
-### 6.4 长任务不要挂在一条 SSH 会话上
+### 6.4 ⚠️ 开发机的代理会拦住发往 Tailscale 的 HTTP 请求
+
+这台 Ubuntu 开发机的 shell 里有：
+
+```text
+http_proxy  = http://127.0.0.1:7890/
+all_proxy   = socks://127.0.0.1:7890/
+no_proxy    = .ingarena.net
+```
+
+`no_proxy` 里**没有 tailnet 的域名**，所以 `curl http://icewalnut-1060.tail22a711.ts.net:8188/...`
+会被送去代理，表现是 **502**，看起来像服务器出了问题，实际上服务器好好的。
+
+处置：
+
+```bash
+curl --noproxy '*' http://icewalnut-1060.tail22a711.ts.net:8188/system_stats
+```
+
+或者把 `.tail22a711.ts.net` 加进 `no_proxy`。
+
+⚠️ 这条只影响**从开发机做验证**；网关自己跑在服务器上，不走这个代理。
+（服务器那侧有它自己的代理问题，见 6.3。）
+
+### 6.5 长任务不要挂在一条 SSH 会话上
 
 GPU 任务动辄十几分钟，断线就白跑。⇒ 用
 
@@ -227,7 +251,7 @@ setsid nohup <命令> > run.log 2>&1 < /dev/null &
 
 脱离会话，然后轮询日志。
 
-### 6.5 ⚠️ 模型加载是一笔与工作量无关的固定开销
+### 6.6 ⚠️ 模型加载是一笔与工作量无关的固定开销
 
 大模型加载要几分钟，**每启动一次进程就要付一次**，跟这次要生成几个结果无关。
 
