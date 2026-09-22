@@ -241,7 +241,53 @@ curl --noproxy '*' http://icewalnut-1060.tail22a711.ts.net:8188/system_stats
 ⚠️ 这条只影响**从开发机做验证**；网关自己跑在服务器上，不走这个代理。
 （服务器那侧有它自己的代理问题，见 6.3。）
 
-### 6.5 长任务不要挂在一条 SSH 会话上
+### 6.5 ⚠️ WSL 的端口从外面连不上，但发行版好好的
+
+**症状与 §4 那个坑一模一样（连不上），但处置完全不同，先分清楚。**
+
+2026-09-22 实测遇到过一次：`ssh icewalnut-wsl`、ComfyUI 的 8188、网关的 7869
+从开发机全部连不上，而 `ssh icewalnut`（Windows 本体，22 端口）正常。
+
+**先区分是哪一种**：
+
+```bash
+ssh icewalnut 'wsl.exe -d Ubuntu-22.04 --exec /bin/sh -c "uptime; ss -tln | grep 2222"'
+```
+
+* 命令失败或 uptime 很短 ⇒ 是 §4，发行版被回收了，去查那个计划任务；
+* **发行版跑着、sshd 也在监听 ⇒ 是本条**，继续往下。
+
+**确认**（在 Windows 本机上测，不经过 Tailscale 网络）：
+
+```bash
+ssh icewalnut 'Test-NetConnection -ComputerName 127.0.0.1 -Port 2222 -InformationLevel Quiet'
+ssh icewalnut 'Test-NetConnection -ComputerName 100.64.3.34 -Port 2222 -InformationLevel Quiet'
+```
+
+**环回通、自己的 Tailscale 地址不通** ⇒ 就是这一条。
+
+**根因**：WSL 镜像网络那层有一个 Hyper-V 防火墙，它的
+`DefaultInboundAction` 是 `Block`，而入站规则里只有一条
+`MPSSVC Loopback Allow Rule` —— **只放行环回，不放行外部入站**。
+Windows 本体的 22 端口不受它管，所以那个还是通的。
+
+**处置**：给需要的端口加 Hyper-V 入站放行规则。已经加好的两条：
+
+```text
+grokgen-wsl-ssh       tcp/2222
+grokgen-wsl-comfyui   tcp/8188
+```
+
+撤销：`ssh icewalnut 'Remove-NetFirewallHyperVRule -Name grokgen-wsl-ssh'`。
+
+⚠️ **写新规则时按 §6.1 的规矩，传一个 ASCII 的 `.ps1` 过去执行**，
+不要在命令行里拼 PowerShell。WSL 的 `VMCreatorId` 是
+`{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}`（`Get-NetFirewallHyperVVMCreator` 可查）。
+
+⚠️ **它是什么时候、被什么改成这样的，没有查出来。** 当天早些时候还是好的，
+可能是 Windows 更新或睡眠唤醒后重新评估。**所以它可能再次发生。**
+
+### 6.6 长任务不要挂在一条 SSH 会话上
 
 GPU 任务动辄十几分钟，断线就白跑。⇒ 用
 
@@ -251,7 +297,7 @@ setsid nohup <命令> > run.log 2>&1 < /dev/null &
 
 脱离会话，然后轮询日志。
 
-### 6.6 ⚠️ 模型加载是一笔与工作量无关的固定开销
+### 6.7 ⚠️ 模型加载是一笔与工作量无关的固定开销
 
 大模型加载要几分钟，**每启动一次进程就要付一次**，跟这次要生成几个结果无关。
 
