@@ -74,16 +74,19 @@ img = _resize(last_frame[:1],  width, height, "center")     # 尾帧：居中裁
 
 每个 round 结束时按 `AGENTS.md` §1.2 写总结到
 `Docs/experience/YYYY-MM-DD/`，文件名带上轮次编号，例如 `M1R3_...md`。
+总结里必须包含 `Docs/Validation.md` §5 要求的四项，**其中「没验证什么」不是可选项**。
 
-| Round | 要解决的问题 | 解决的判据 |
-|---|---|---|
-| M1R1 | 网关能被部署到服务器并访问到 | 从开发机 curl 到 `/v1/health` |
-| M1R2 | workflow 拼得对不对 | 构造器的全部用例在开发机上通过 |
-| M1R3 | ComfyUI 认不认这张图，能不能出视频 | 拿到一个画面正常的 mp4 |
-| M1R4 | 首帧图能不能真的生效 | 产物首帧肉眼可辨认是上传的图 |
-| M1R5 | 并发提交会不会互相踩 | 三个任务严格串行，失败原因带得回来 |
-| M1R6 | 手机能不能拖进度条 | Range 请求返回 206 且 `Content-Range` 正确 |
-| M1R7 | 整条链路是否可重复验证 | 一条命令跑完全程 |
+| Round | 要解决的问题 | 解决的判据 | VS |
+|---|---|---|---|
+| M1R1 | 网关能被部署到服务器并访问到 | 从开发机 curl 到 `/v1/health` | VS-12 |
+| M1R2 | workflow 拼得对不对 | 构造器的全部用例在开发机上通过 | VS-1〜4, VS-13 |
+| M1R3 | ComfyUI 认不认这张图，能不能出视频 | 拿到一个画面正常的 mp4 | VS-5, VS-6, VS-7 |
+| M1R4 | 首帧图能不能真的生效 | 产物首帧肉眼可辨认是上传的图 | VS-8 |
+| M1R5 | 并发提交会不会互相踩 | 三个任务严格串行，失败原因带得回来 | VS-9, VS-10 |
+| M1R6 | 手机能不能拖进度条 | Range 请求返回 206 且 `Content-Range` 正确 | VS-11 |
+| M1R7 | 整条链路是否可重复验证 | 一条命令跑完全程 | 全部复跑 |
+
+VS 编号的定义见 `Docs/Validation.md` §3，层级定义见其 §2。
 
 ---
 
@@ -339,17 +342,12 @@ M4 开始前还要确认一件事：这 4 个 checkpoint 里 `v1-5-pruned-emaonl
 
 ---
 
-## 7. Round 与验收对照表
+## 7. 每轮收尾
 
-| Round | 完成的判据 |
-|---|---|
-| M1R1 | 从开发机 curl 到部署在服务器上的 `/v1/health`，且是 `deploy_server.sh` 部署的 |
-| M1R2 | 开发机上 workflow 构造的全部用例通过，含三种模式与帧数边界 |
-| M1R3 | 拿到一个 h264+aac+mp4，**且肉眼确认画面正常** |
-| M1R4 | I2VA 产物的首帧**肉眼可辨认是上传的那张图** |
-| M1R5 | 三个任务串行执行；模拟失败时 `failure_reason` 带 `node_errors` 原文 |
-| M1R6 | `curl -r 0-1023` 返回 206 且 `Content-Range` 正确 |
-| M1R7 | `scripts/smoke_m1.sh` 一条命令跑通全程 |
+判据见 §3 的表，不在这里重复一遍。每个 round 结束时：
 
-⚠️ **每个 round 结束都要写总结**到 `Docs/experience/YYYY-MM-DD/M1Rn_*.md`，
-并同步 `Docs/TODO.md` 与 `Docs/ContextPack.md`（`AGENTS.md` §1.2）。
+1. 写总结到 `Docs/experience/YYYY-MM-DD/M1R<n>_*.md`，
+   内容按 `Docs/Validation.md` §5 的四项 —— **「没验证什么」不是可选项**
+2. 更新 `Docs/Validation.md` §3 里那几行的状态
+3. 同步 `Docs/TODO.md` 与 `Docs/ContextPack.md`
+4. 本轮未受影响的文档，**显式确认它仍然准确**再决定不改

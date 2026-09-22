@@ -54,8 +54,9 @@ App 自己不跑任何模型。它提交任务、看进度、看结果；模型�
 6. `Docs/contract/` —— App 与网关的接口契约（任务涉及任何一端的接口时）
 7. 动到哪一端，就读那一端的 `architecture/` 与 `implementation/`：
    网关看 `server/Docs/`，Android 客户端看 `app/Docs/`
-8. `Docs/runbooks/home_gpu_server.md`（任务涉及后端、GPU、服务器上的任何东西时）
-9. 最近的 `Docs/experience/YYYY-MM-DD/*.md`
+8. `Docs/Validation.md`（任务涉及代码、脚本或运行行为时）
+9. `Docs/runbooks/home_gpu_server.md`（任务涉及后端、GPU、服务器上的任何东西时）
+10. 最近的 `Docs/experience/YYYY-MM-DD/*.md`
 
 项目还在早期，上面有些文件可能**还不存在**。不存在就跳过，并在复述里说明它不存在，
 不要凭空编造它的内容。
@@ -98,7 +99,7 @@ App 自己不跑任何模型。它提交任务、看进度、看结果；模型�
 
 | 放哪 | 什么文档 |
 |---|---|
-| 根 `Docs/` | 两端都要读的：产品需求、接口契约、runbook、原始材料、round 总结、TODO、ContextPack |
+| 根 `Docs/` | 两端都要读的：产品需求、接口契约、**验证标准**、runbook、原始材料、round 总结、TODO、ContextPack |
 | `server/Docs/` | 只有网关关心的：架构、执行文档 |
 | `app/Docs/` | 只有 Android 客户端关心的：架构、执行文档（开发 App 时再建） |
 
@@ -108,7 +109,7 @@ App 自己不跑任何模型。它提交任务、看进度、看结果；模型�
 放进任何一端，另一端就会抄一份，然后两份慢慢对不上，
 而且**不会有任何机制报错** —— 契约不是代码，编译器不管它。
 
-`Docs/` 根目录只直接放 `README.md`、`TODO.md`、`ContextPack.md`，
+`Docs/` 根目录只直接放 `README.md`、`TODO.md`、`ContextPack.md`、`Validation.md`，
 其余一律进子目录，**不得堆积新文件**。
 
 移动文档时，**在同一次改动里更新所有引用路径** —— 引用是散文式路径，不是链接，
