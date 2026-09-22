@@ -140,12 +140,30 @@ def _check_literal(node_id: str, class_type: str, name: str, value, spec) -> lis
             Violation(node_id, class_type, f"输入 `{name}` 应当是连线，却填了字面量 {value!r}")
         ]
 
+    extra = spec[-1] if isinstance(spec, list) and spec and isinstance(spec[-1], dict) else {}
+
+    # ⚠️ 带 image_upload 标记的输入不查候选。
+    #
+    # 它们是文件选择器，候选列表只列 input/ 的**顶层**文件，
+    # 但 ComfyUI 接受 "子目录/文件名" 这种带注解的路径 ——
+    # 网关上传的图就放在 input/grokgen/ 下。
+    #
+    # 依据不是猜的：这类节点定义了 VALIDATE_INPUTS(s, image)，
+    # 而 execution.py 的组合校验有一个前置条件
+    # `if x not in validate_function_inputs and not validate_has_kwargs:` ——
+    # **ComfyUI 自己也跳过这些输入的候选校验**，只查文件存不存在。
+    #
+    # 按标记而不是按节点名放行：全仓有 6 处带这个标记，
+    # 硬编码 "LoadImage" 会漏掉其余五个。
+    if extra.get("image_upload"):
+        return []
+
     # COMBO 有两种写法：类型位直接是候选列表，或类型位是 "COMBO" 而候选在 options 里。
     options = None
     if isinstance(declared_type, list):
         options = declared_type
-    elif declared_type == "COMBO" and isinstance(spec[-1], dict):
-        options = spec[-1].get("options")
+    elif declared_type == "COMBO":
+        options = extra.get("options")
 
     if options and value not in options:
         preview = ", ".join(repr(o) for o in list(options)[:4])

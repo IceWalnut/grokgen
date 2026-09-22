@@ -56,7 +56,9 @@ class VideoJobRequest(BaseModel):
         prompt: 三段式 prompt。
         first_frame: 首帧图在 ComfyUI `input/` 下的文件名；`T2VA` 时为 `None`。
         last_frame: 尾帧图文件名；只有 `FL2VA` 用。
-        width / height: 期望画布尺寸，像素。**会被归一化到 32 的倍数**。
+        width / height: 期望画布尺寸，像素。**可选** ——
+            留空且有首帧图时，网关按图片宽高比推算画布（契约 §2）。
+            **默认就应该留空**：首帧是拉伸不是裁剪，比例不符会变形且不报错。
         duration_seconds: 期望时长，秒。**会被换算成模型接受的帧数**，实际时长可能变长。
         turbo: 是否用 Turbo LoRA。决定采样 profile，见 `TURBO_PROFILE`。
         steps / seed: 留空时取 profile 默认值 / 随机。
@@ -66,8 +68,8 @@ class VideoJobRequest(BaseModel):
     prompt: PromptParts
     first_frame: str | None = None
     last_frame: str | None = None
-    width: int = Field(default=736, ge=32)
-    height: int = Field(default=416, ge=32)
+    width: int | None = Field(default=None, ge=32)
+    height: int | None = Field(default=None, ge=32)
     duration_seconds: float = Field(default=5.0, gt=0)
     turbo: bool = True
     steps: int | None = None

@@ -131,3 +131,71 @@ def test_all_violations_are_collected_not_just_the_first():
     del graph["shift"]["inputs"]["shift_audio"]
 
     assert len(check_workflow(graph, OBJECT_INFO)) >= 2
+
+
+# --------------------------------------------------------------------------
+# image_upload 标记的放行（M1R4）
+# --------------------------------------------------------------------------
+
+OBJECT_INFO_WITH_IMAGE_UPLOAD = {
+    **OBJECT_INFO,
+    "LoadImage": {
+        "input": {
+            "required": {
+                # 真实 object_info 里就是这个形状：候选只列 input/ 顶层文件，
+                # 末尾 dict 带 image_upload 标记。
+                "image": [["example.png", "00000-2345595996.png"], {"image_upload": True}],
+            }
+        }
+    },
+}
+
+
+def test_subfolder_image_reference_is_allowed():
+    """上传到子目录的图不该被判违例。
+
+    依据：ComfyUI 自己也跳过这些输入的候选校验 —— `LoadImage` 定义了
+    `VALIDATE_INPUTS(s, image)`，而 `execution.py` 的组合校验有前置条件
+    `if x not in validate_function_inputs ...`。它只查文件存不存在。
+    """
+    graph = {
+        "first_frame": {
+            "class_type": "LoadImage",
+            "inputs": {"image": "grokgen/img_20260922_ab12.png"},
+        }
+    }
+    assert check_workflow(graph, OBJECT_INFO_WITH_IMAGE_UPLOAD) == []
+
+
+def test_top_level_image_reference_is_also_allowed():
+    """顶层文件当然也放行。"""
+    graph = {"f": {"class_type": "LoadImage", "inputs": {"image": "example.png"}}}
+    assert check_workflow(graph, OBJECT_INFO_WITH_IMAGE_UPLOAD) == []
+
+
+def test_the_exemption_does_not_leak_to_other_combos():
+    """⚠️ 反面判据：例外不能开太大。
+
+    只有带 `image_upload` 标记的输入跳过候选检查；
+    同一张图里别的 COMBO 填错值必须照样报。
+    没有这一条，把候选检查整个删掉也能让上面两条通过。
+    """
+    graph = {
+        "f": {"class_type": "LoadImage", "inputs": {"image": "grokgen/x.png"}},
+        "unet": {
+            "class_type": "UNETLoader",
+            "inputs": {"unet_name": "typo.safetensors", "weight_dtype": "default"},
+        },
+    }
+    problems = [str(v) for v in check_workflow(graph, OBJECT_INFO_WITH_IMAGE_UPLOAD)]
+
+    assert len(problems) == 1
+    assert "typo.safetensors" in problems[0]
+
+
+def test_exemption_still_reports_missing_required_input():
+    """放行的只是「候选检查」，不是整个节点。缺必填输入照样报。"""
+    graph = {"f": {"class_type": "LoadImage", "inputs": {}}}
+    problems = [str(v) for v in check_workflow(graph, OBJECT_INFO_WITH_IMAGE_UPLOAD)]
+
+    assert any("缺必填输入" in p and "image" in p for p in problems)

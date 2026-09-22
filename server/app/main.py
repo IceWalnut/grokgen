@@ -3,6 +3,7 @@
 M1R1 只有 `/v1/health`。任务提交、媒体库、GPU 管理分别在 M1R3 之后加。
 """
 
+import logging
 import subprocess
 from contextlib import asynccontextmanager
 from functools import lru_cache
@@ -10,8 +11,12 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
+from app.api import uploads
 from app.comfy.client import ComfyClient, ComfyUnreachable
 from app.comfy.http_client import HttpComfyClient
+from app.media.probe import FfprobeImageProbe, ImageProbe
+
+logger = logging.getLogger(__name__)
 
 
 @lru_cache(maxsize=1)
@@ -43,14 +48,20 @@ def gateway_version() -> str:
     return result.stdout.strip() or "unknown"
 
 
-def create_app(comfy_client: ComfyClient | None = None) -> FastAPI:
+def create_app(
+    comfy_client: ComfyClient | None = None, image_probe: ImageProbe | None = None
+) -> FastAPI:
     """组装 FastAPI 应用。
 
     Args:
         comfy_client: 注入的 ComfyUI 客户端。测试传 `FakeComfyClient`；
-            传 `None` 时用真实的 `HttpComfyClient`。这个参数是开发机上
-            能跑测试的原因 —— 它是架构文档 §3「ComfyUI 调用必须可替换」
-            那条约束的落点。
+            传 `None` 时用真实的 `HttpComfyClient`。
+        image_probe: 注入的图片探测器。测试传 `FakeImageProbe`；
+            传 `None` 时用 `FfprobeImageProbe`。
+
+    这两个参数是开发机上能跑测试的原因 —— 它们各自封着一个开发机没有的
+    外部依赖（GPU 上的 ComfyUI、以及 ffprobe），
+    是架构文档 §3「外部调用必须可替换」那条约束的落点。
 
     Returns:
         配好路由与 lifespan 的 FastAPI 实例。
@@ -60,10 +71,17 @@ def create_app(comfy_client: ComfyClient | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         # 客户端持有连接池，跟着应用生命周期走，不要每个请求建一个。
         app.state.comfy = comfy_client or HttpComfyClient()
+        app.state.image_probe = image_probe or FfprobeImageProbe()
+        # ⚠️ ffprobe 缺失要在启动时就喊出来，而不是等第一次上传才失败。
+        if image_probe is None and not FfprobeImageProbe.available():
+            logger.warning(
+                "找不到 ffprobe，上传图片时读不出尺寸，画布将无法按图片比例推算"
+            )
         yield
         await app.state.comfy.aclose()
 
     app = FastAPI(title="grokgen gateway", lifespan=lifespan)
+    app.include_router(uploads.router)
 
     @app.get("/v1/health")
     async def health() -> dict:

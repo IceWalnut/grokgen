@@ -10,6 +10,8 @@ uvicorn[standard]
 httpx
 pydantic
 pydantic-settings
+# FastAPI 接收 multipart 上传要它，不装就在导入期报错。
+python-multipart
 
 pytest
 pytest-asyncio

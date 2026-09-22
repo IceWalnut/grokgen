@@ -11,6 +11,7 @@ from app.comfy.client import (
     GpuStats,
     JobRecord,
     OutputFile,
+    UploadedImage,
 )
 from app.core.config import settings
 
@@ -155,6 +156,49 @@ class HttpComfyClient:
         if not prompt_id:
             raise ComfyUnreachable(f"ComfyUI 没有返回 prompt_id: {response.text[:200]}")
         return prompt_id
+
+    async def upload_image(
+        self, data: bytes, filename: str, subfolder: str
+    ) -> UploadedImage:
+        """把图片 POST 给 ComfyUI 的 `/upload/image`。
+
+        ⚠️ **必须用响应里返回的 `name`，不能用自己发过去的那个。**
+        ComfyUI 在不覆盖模式下会先比文件 hash：内容相同就复用已有文件，
+        内容不同则把新文件改名成 `name (1).ext`。
+        用错名字的后果是 workflow 引用到另一张图，而且**不会报错**。
+
+        Args:
+            data: 图片字节。
+            filename: 期望的文件名。
+            subfolder: `input/` 下的子目录。
+
+        Returns:
+            `UploadedImage`。
+
+        Raises:
+            ComfyUnreachable: 请求失败、非 2xx，或响应里没有 `name`。
+        """
+        files = {"image": (filename, data, "application/octet-stream")}
+        form = {"type": "input", "subfolder": subfolder}
+        try:
+            response = await self._client.post(
+                "/upload/image", files=files, data=form, timeout=LONG_TIMEOUT_SECONDS
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise ComfyUnreachable(f"上传 {filename} 失败: {exc!r}") from exc
+
+        body = response.json()
+        name = body.get("name")
+        if not name:
+            raise ComfyUnreachable(f"ComfyUI 上传响应里没有 name: {response.text[:200]}")
+
+        asset = body.get("asset") or {}
+        return UploadedImage(
+            name=name,
+            subfolder=body.get("subfolder", subfolder),
+            size_bytes=asset.get("size"),
+        )
 
     async def history(self, prompt_id: str) -> JobRecord | None:
         """查一次任务的结果。

@@ -38,10 +38,10 @@ v0.1 **没有认证**。Tailnet 成员即可访问，整个 tailnet 就是信任
     "soundscape": "环境声，可为空",
     "music": "背景音乐，可为空"
   },
-  "first_frame_asset_id": "img_20260922_ab12",
+  "first_frame_asset_id": "grokgen/img_20260922_ab12.png",
   "last_frame_asset_id": null,
-  "width": 736,
-  "height": 416,
+  "width": null,
+  "height": null,
   "duration_seconds": 5,
   "steps": 8,
   "seed": null,
@@ -55,6 +55,18 @@ v0.1 **没有认证**。Tailnet 成员即可访问，整个 tailnet 就是信任
 ```
 
 `mode` 取 `T2VA` / `I2VA` / `FL2VA`。`seed` 为 `null` 时网关随机取一个并回报。
+
+⭐ **`width` / `height` 是可选的**，三种情形：
+
+| 情形 | 网关怎么做 |
+|---|---|
+| 都不给 + 有首帧图 | **按首帧图的宽高比推画布**，贴到 32 的倍数 |
+| 都不给 + 没有首帧图（T2VA） | 用默认 `736x416` |
+| 给了 | 用用户给的；**宽高比与首帧图不符时在 `notices` 里说明会被拉伸** |
+
+⚠️ **默认应当是「不给」。** 首帧图被拉伸变形是这条链路最容易出的问题 ——
+原生节点对首帧用的是 `crop="disabled"`（直接拉伸），不是裁剪。
+让画布去适配图片，而不是把图片拉去适配画布。
 
 响应：
 
@@ -153,12 +165,23 @@ POST /v1/jobs/{job_id}/cancel            取消；已完成的任务返回 409
 `multipart/form-data`，字段名 `file`。
 
 ```json
-{ "asset_id": "img_20260922_ab12",
-  "width": 1024, "height": 576, "size_bytes": 843210 }
+{ "asset_id": "grokgen/img_20260922_ab12.png",
+  "width": 768, "height": 768, "size_bytes": 8589 }
 ```
 
 ⚠️ **上传与提交分离。** 生成任务里只带 `asset_id`，不带大文件——
 任务提交要快，上传可以慢。
+
+⚠️ **`asset_id` 是一个路径，不是一个不透明的 id。**
+它就是网关在 workflow 里填给 `LoadImage` 的那个值（相对 ComfyUI `input/` 的路径），
+`grokgen/` 这一层是为了和用户自己放在 `input/` 里的文件分开 ——
+ComfyUI 界面的 LoadImage 下拉框只列顶层文件，所以手机传上去的图不会把它塞满。
+
+**为什么不另造一层 id ↔ 路径的映射**：M1 没有持久化，
+多一层映射就多一处网关重启后会丢的状态。App 只管把这个字符串原样传回来。
+
+⚠️ **`width` / `height` 一定要用，别丢。** 不给 `POST /v1/jobs` 指定尺寸时，
+网关就是按这两个数推画布的（见下）。
 
 ---
 

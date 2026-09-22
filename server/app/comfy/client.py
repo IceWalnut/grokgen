@@ -4,8 +4,8 @@
 `core/`、`media/`、`api/` 里不允许出现任何 HTTP 调用或 ComfyUI 的地址 ——
 这条约束由 `tests/test_layering.py` 强制（VS-13）。
 
-M1R3 加了 `submit` / `history` / `object_info`；
-`upload_image` 在 M1R4，`interrupt` / `free` / `events` 在 M1R5 之后。
+M1R3 加了 `submit` / `history` / `object_info`，M1R4 加了 `upload_image`；
+`interrupt` / `free` / `events` 在 M1R5 之后。
 """
 
 from dataclasses import dataclass, field
@@ -40,6 +40,28 @@ class OutputFile:
     filename: str
     subfolder: str
     node_id: str
+
+
+@dataclass(frozen=True)
+class UploadedImage:
+    """`POST /upload/image` 的结果。
+
+    Attributes:
+        name: **ComfyUI 最终采用的文件名**。
+            ⚠️ 它不一定等于上传时给的名字 —— 重名且内容不同时，
+            ComfyUI 会改成 `name (1).ext`。必须用这个返回值。
+        subfolder: 落在 `input/` 下的哪个子目录。
+        size_bytes: 文件大小；ComfyUI 没给时为 `None`。
+    """
+
+    name: str
+    subfolder: str
+    size_bytes: int | None = None
+
+    @property
+    def reference(self) -> str:
+        """workflow 里 `LoadImage.image` 该填的值（相对 `input/` 的路径）。"""
+        return f"{self.subfolder}/{self.name}" if self.subfolder else self.name
 
 
 @dataclass(frozen=True)
@@ -135,6 +157,24 @@ class ComfyClient(Protocol):
         Raises:
             ComfyValidationError: 图没通过 ComfyUI 的校验，带 `node_errors`。
             ComfyUnreachable: ComfyUI 不可达。
+        """
+        ...
+
+    async def upload_image(
+        self, data: bytes, filename: str, subfolder: str
+    ) -> UploadedImage:
+        """把一张图传到 ComfyUI 的 `input/` 下。
+
+        Args:
+            data: 图片字节。
+            filename: 期望的文件名。**ComfyUI 可能改名**，以返回值为准。
+            subfolder: `input/` 下的子目录，空字符串表示顶层。
+
+        Returns:
+            `UploadedImage`，用它的 `reference` 填进 workflow。
+
+        Raises:
+            ComfyUnreachable: 上传失败。
         """
         ...
 

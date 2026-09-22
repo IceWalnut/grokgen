@@ -13,10 +13,12 @@ from app.comfy.workflows.h3_video import (
     NODE_LORA,
     NODE_SHIFT,
     build_prompt,
+    fit_canvas,
     build_workflow,
     normalize,
     seconds_to_length,
 )
+from app.media.probe import ImageSize
 from app.models.video_job import PromptParts, VideoJobRequest, VideoMode
 
 
@@ -296,3 +298,87 @@ def test_prompt_text_reaches_the_h3_node():
     prompt_in_graph = workflow[NODE_H3]["inputs"]["prompt"]
     assert prompt_in_graph.splitlines()[0].startswith("For the target video")
     assert "integrated_multimodal_description:" in prompt_in_graph
+
+
+# --------------------------------------------------------------------------
+# VS-16 画布按首帧图的比例推导
+# --------------------------------------------------------------------------
+
+
+def test_fit_canvas_preserves_aspect_ratio_for_square_image():
+    """1:1 的图应当得到近方形画布，而不是被塞进 16:9。"""
+    width, height = fit_canvas(ImageSize(768, 768))
+
+    assert width == height, "正方形的图不该推出非正方形画布"
+    assert width % 32 == 0
+    # 像素数落在预算附近（就近取整会有一点偏差）
+    assert 0.8 <= (width * height) / (736 * 416) <= 1.25
+
+
+@pytest.mark.parametrize(
+    "source",
+    [ImageSize(1920, 1080), ImageSize(1080, 1920), ImageSize(768, 768), ImageSize(1024, 576)],
+)
+def test_fit_canvas_keeps_ratio_within_tolerance(source):
+    """常见比例下，推出来的画布比例与原图差别要很小。
+
+    ⚠️ 这是这条链路的意义所在：比例不符 = 首帧被拉伸变形，而且不报错。
+    """
+    width, height = fit_canvas(source)
+    source_ratio = source.width / source.height
+    canvas_ratio = width / height
+
+    assert abs(canvas_ratio - source_ratio) / source_ratio < 0.08
+    assert width % 32 == 0 and height % 32 == 0
+
+
+def test_fit_canvas_extreme_ratio_does_not_collapse():
+    """极端比例下短边不能塌成 0 或负数。"""
+    width, height = fit_canvas(ImageSize(4096, 256))
+
+    assert width >= 32 and height >= 32
+    assert width % 32 == 0 and height % 32 == 0
+
+
+def test_canvas_derived_when_dimensions_omitted():
+    """不给宽高 + 知道图片尺寸 ⇒ 按图片比例推，并说明。"""
+    request = make_request(
+        mode=VideoMode.I2VA, first_frame="example.png", width=None, height=None
+    )
+    normalized = normalize(request, ImageSize(768, 768))
+
+    assert normalized.width == normalized.height
+    assert any("按首帧图的比例推算" in n for n in normalized.notices)
+
+
+def test_explicit_dimensions_win_but_stretch_is_flagged():
+    """给了宽高就用用户的，但比例不符时必须警告会变形。
+
+    ⚠️ 正向断言：警告里要出现两边的实际尺寸，
+    否则用户不知道是哪两个数对不上。
+    """
+    request = make_request(
+        mode=VideoMode.I2VA, first_frame="example.png", width=736, height=416
+    )
+    normalized = normalize(request, ImageSize(768, 768))
+
+    assert (normalized.width, normalized.height) == (736, 416)
+    warning = [n for n in normalized.notices if "拉伸变形" in n]
+    assert warning, "比例不符却没有警告"
+    assert "768x768" in warning[0] and "736x416" in warning[0]
+
+
+def test_matching_aspect_ratio_produces_no_stretch_warning():
+    """比例本来就一致时不要发噪音警告。"""
+    request = make_request(
+        mode=VideoMode.I2VA, first_frame="x.png", width=736, height=416
+    )
+    normalized = normalize(request, ImageSize(1472, 832))  # 正好 2 倍，同比例
+
+    assert not any("拉伸变形" in n for n in normalized.notices)
+
+
+def test_no_dimensions_and_no_source_falls_back_to_default():
+    """纯 T2VA 既没有宽高也没有图片，用默认值。"""
+    normalized = normalize(make_request(width=None, height=None))
+    assert (normalized.width, normalized.height) == (736, 416)

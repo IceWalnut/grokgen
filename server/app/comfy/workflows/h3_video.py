@@ -16,6 +16,7 @@ import math
 import random
 
 from app.core.config import H3_AUDIO_VAE, H3_VIDEO_VAE, settings
+from app.media.probe import ImageSize
 from app.models.video_job import (
     FULL_PROFILE,
     RESOLUTION_MULTIPLE,
@@ -27,6 +28,14 @@ from app.models.video_job import (
 )
 
 FPS = 24.0
+
+# 用户没给尺寸、也没有首帧图时的默认画布。M1 实测跑通过的尺寸。
+DEFAULT_WIDTH = 736
+DEFAULT_HEIGHT = 416
+
+# 宽高比差多少才值得提示「会被拉伸」。
+# 2% 以内是贴 32 倍数造成的，不值得打扰用户。
+ASPECT_TOLERANCE = 0.02
 
 # 帧数必须落在 17k+5 的格子上（5, 22, 39, …, 124, …）。
 # 节点 tooltip：「Frame count at 24 fps, snapped up to the model's 17k+5 grid
@@ -87,31 +96,140 @@ def _round_up_to_multiple(value: int, multiple: int = RESOLUTION_MULTIPLE) -> in
     return math.ceil(value / multiple) * multiple
 
 
-def normalize(request: VideoJobRequest) -> NormalizedParams:
+def _round_to_multiple(value: float, multiple: int = RESOLUTION_MULTIPLE) -> int:
+    """把尺寸就近取到 `multiple` 的倍数，最小一格。
+
+    推画布时用「就近」而不是「向上」：向上取整会让实际像素数系统性地
+    超出预算，长宽比也会被推歪。
+
+    Args:
+        value: 原始值，可以是小数。
+        multiple: 倍数基数。
+
+    Returns:
+        至少等于 `multiple` 的整数。
+    """
+    return max(multiple, int(round(value / multiple)) * multiple)
+
+
+def fit_canvas(
+    source: ImageSize,
+    target_pixels: int | None = None,
+    multiple: int = RESOLUTION_MULTIPLE,
+) -> tuple[int, int]:
+    """按图片的宽高比算出一块画布，总像素数接近预算，两边都是 32 的倍数。
+
+    **为什么要有这个函数**：原生节点对 `first_frame` 用的是 `crop="disabled"`，
+    也就是**直接拉伸**。如果画布比例和图片不一样，首帧就会变形，
+    而且这不会以任何形式报错。正解是让画布去适配图片。
+
+    做法照官方 i2v 模板：它在 subgraph 外面接
+    `ImageScaleToTotalPixels(0.9 MP, 32 的倍数) → GetImageSize` 驱动画布。
+
+    ⚠️ **像素预算不用官方那个 0.9 MP**（约 1344x768）。M1 实测跑通的是
+    `736x416` = 0.306 MP，默认就用它，放在配置里便于以后调大。
+    **抄的是做法，不是参数。**
+
+    Args:
+        source: 源图尺寸。
+        target_pixels: 目标总像素数，默认取配置里的 `canvas_target_pixels`。
+        multiple: 宽高都要贴到的倍数。
+
+    Returns:
+        `(width, height)`，两边都是 `multiple` 的倍数且至少 `multiple`。
+    """
+    budget = target_pixels if target_pixels is not None else settings.canvas_target_pixels
+    scale = math.sqrt(budget / (source.width * source.height))
+    return (
+        _round_to_multiple(source.width * scale, multiple),
+        _round_to_multiple(source.height * scale, multiple),
+    )
+
+
+def _aspect_ratio(width: int, height: int) -> float:
+    """宽高比。"""
+    return width / height
+
+
+def _resolve_canvas(
+    request: VideoJobRequest, source_size: ImageSize | None, notices: list[str]
+) -> tuple[int, int]:
+    """定出最终画布尺寸，并把与用户预期的差别写进 `notices`。
+
+    三种情形（契约文档 §2）：
+
+    1. **用户给了宽高** —— 用他的，向上取到 32 的倍数。
+       若同时有首帧图且比例对不上，**明确提示会被拉伸**。
+    2. **没给宽高、但知道首帧图尺寸** —— 按图片比例推画布。这是推荐路径。
+    3. **都没有**（纯 T2VA，或探测失败）—— 用默认值。
+
+    ⚠️ 情形 1 那条提示不能省。首帧是 `crop="disabled"`（拉伸）不是裁剪，
+    比例不符时画面会变形，而**这不会以任何形式报错**。
+
+    Args:
+        request: 原始请求。
+        source_size: 首帧图尺寸，未知时为 `None`。
+        notices: 就地追加提示的列表。
+
+    Returns:
+        `(width, height)`，都是 32 的倍数。
+    """
+    if request.width is not None or request.height is not None:
+        width = _round_up_to_multiple(request.width or DEFAULT_WIDTH)
+        height = _round_up_to_multiple(request.height or DEFAULT_HEIGHT)
+        if (request.width, request.height) != (width, height):
+            notices.append(
+                f"分辨率已调整：{request.width}x{request.height} → {width}x{height}"
+                f"（模型要求宽高都是 {RESOLUTION_MULTIPLE} 的倍数）"
+            )
+        if source_size is not None:
+            source_ratio = _aspect_ratio(source_size.width, source_size.height)
+            canvas_ratio = _aspect_ratio(width, height)
+            if abs(source_ratio - canvas_ratio) / source_ratio > ASPECT_TOLERANCE:
+                notices.append(
+                    f"⚠️ 首帧图是 {source_size.width}x{source_size.height}，"
+                    f"与画布 {width}x{height} 比例不同，**画面会被拉伸变形**"
+                    "（模型对首帧是拉伸，不是裁剪）。留空宽高可让画布按图片比例自动计算"
+                )
+        return width, height
+
+    if source_size is not None:
+        width, height = fit_canvas(source_size)
+        notices.append(
+            f"画布按首帧图的比例推算为 {width}x{height}"
+            f"（首帧图 {source_size.width}x{source_size.height}），避免拉伸变形"
+        )
+        return width, height
+
+    return DEFAULT_WIDTH, DEFAULT_HEIGHT
+
+
+def normalize(
+    request: VideoJobRequest, source_size: ImageSize | None = None
+) -> NormalizedParams:
     """把用户填的参数归一化成模型真正接受的值，并记录差异。
 
     流程说明：
-        1. 宽高向上取到 32 的倍数 —— 节点声明了 `step=32`，不是倍数会被拒绝；
+        1. 定画布 —— 用户给了宽高就用他的（向上取到 32 的倍数）；
+           没给且知道首帧图尺寸，就按图片比例推（`fit_canvas`）；
+           都没有就用默认值；
         2. 时长换算成 17k+5 的帧数，并反算真实时长；
         3. seed 为空时随机生成（要回报，否则用户无法复现）；
         4. 按 turbo 与否选采样 profile；
         5. 每一处「用户填的」与「实际用的」不一致，都往 `notices` 里写一条中文说明。
 
+    ⚠️ **本函数仍然是纯函数**：图片尺寸由调用方探测好再传进来，这里不读文件。
+
     Args:
         request: App 提交的原始请求。
+        source_size: 首帧图的尺寸。给了它、且用户没有指定宽高时，
+            画布按图片比例推导。
 
     Returns:
         `NormalizedParams`，其中 `notices` 是给用户看的提示，不是日志。
     """
     notices: list[str] = []
-
-    width = _round_up_to_multiple(request.width)
-    height = _round_up_to_multiple(request.height)
-    if (width, height) != (request.width, request.height):
-        notices.append(
-            f"分辨率已调整：{request.width}x{request.height} → {width}x{height}"
-            f"（模型要求宽高都是 {RESOLUTION_MULTIPLE} 的倍数）"
-        )
+    width, height = _resolve_canvas(request, source_size, notices)
 
     length_frames = seconds_to_length(request.duration_seconds)
     actual_duration = length_frames / FPS
@@ -127,16 +245,6 @@ def normalize(request: VideoJobRequest) -> NormalizedParams:
         notices.append(
             f"⚠️ {length_frames} 帧超出模型训练过的范围（{low}–{high} 帧，"
             f"约 {low / FPS:.1f}–{high / FPS:.1f} 秒），结果可能不稳定"
-        )
-
-    # ⚠️ 首帧是拉伸不是裁剪：节点里 first_frame 用 crop="disabled"，
-    # last_frame 才用 crop="center"。宽高比不匹配时首帧会变形。
-    # 正解是让画布去适配图片（官方模板用 ImageScaleToTotalPixels + GetImageSize），
-    # 但那要先知道图片尺寸 —— 本模块是纯函数读不到，留到有上传之后再做。
-    if request.first_frame is not None:
-        notices.append(
-            f"首帧图会被拉伸到 {width}x{height}（不是裁剪）；"
-            "如果原图宽高比不同，画面会变形"
         )
 
     profile = TURBO_PROFILE if request.turbo else FULL_PROFILE
@@ -223,7 +331,9 @@ def build_prompt(parts: PromptParts, normalized: NormalizedParams, mode: VideoMo
     return "\n\n".join(blocks)
 
 
-def build_workflow(request: VideoJobRequest) -> tuple[dict, NormalizedParams]:
+def build_workflow(
+    request: VideoJobRequest, source_size: ImageSize | None = None
+) -> tuple[dict, NormalizedParams]:
     """拼出完整的 API 格式 workflow。
 
     流程说明：
@@ -238,12 +348,14 @@ def build_workflow(request: VideoJobRequest) -> tuple[dict, NormalizedParams]:
 
     Args:
         request: App 提交的原始请求。
+        source_size: 首帧图的尺寸。给了它、且用户没指定宽高时，
+            画布按图片比例推导，避免首帧被拉伸。
 
     Returns:
         `(workflow, normalized)`。`workflow` 直接就是 `POST /prompt` 的 `prompt` 字段，
         `normalized` 要回给 App 显示。
     """
-    normalized = normalize(request)
+    normalized = normalize(request, source_size)
     prompt_text = build_prompt(request.prompt, normalized, request.mode)
 
     workflow: dict[str, dict] = {
