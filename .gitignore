@@ -1,0 +1,45 @@
+# ---- 编辑器 / 工具 ----
+.history/
+.idea/
+*.iml
+.DS_Store
+
+# VSCode：只忽略个人设置，共享配置可以按需取消忽略
+.vscode/settings.json
+
+# ---- Android (app/) ----
+app/local.properties
+app/.gradle/
+app/build/
+**/build/
+.gradle/
+captures/
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# ---- Python 网关 (server/) ----
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- 运行产物，不进版本库 ----
+# 网关日志与本地数据库
+*.log
+server/data/
+server/media_cache/
+# 生成结果与缩略图都在服务器上，任何情况下都不该出现在仓库里
+output/
+thumbs/
+
+# ---- 密钥与本机配置 ----
+local.properties
+.env
+.env.*
+secrets.*
