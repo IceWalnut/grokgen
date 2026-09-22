@@ -23,12 +23,16 @@ import pytest
 from app.comfy.http_client import HttpComfyClient
 from app.comfy.workflows.h3_video import build_workflow
 from app.comfy.workflows.validation import check_workflow
+from app.media.probe import ImageSize
 from app.models.video_job import PromptParts, VideoJobRequest, VideoMode
 
 pytestmark = pytest.mark.integration
 
 COMFY_URL = os.environ.get(
     "GROKGEN_COMFY_BASE_URL", "http://icewalnut-1060.tail22a711.ts.net:8188"
+)
+GATEWAY_URL = os.environ.get(
+    "GROKGEN_GATEWAY_URL", "http://icewalnut-1060.tail22a711.ts.net:7869"
 )
 
 
@@ -97,3 +101,47 @@ async def test_configured_models_still_exist_on_the_server():
     ]
 
     assert not missing, f"这些模型在服务器上找不到了：{missing}"
+
+
+async def test_i2va_with_subfolder_reference_passes_preflight():
+    """上传到子目录的图，预检不该误报（M1R4）。
+
+    ⚠️ 这一条守的是我们自己的工具：`LoadImage` 的候选列表只列 `input/` 顶层文件，
+    而网关把上传的图放在 `input/grokgen/` 下。ComfyUI 认这种路径
+    （`execution.py:1019` 跳过带 `VALIDATE_INPUTS` 的输入的候选校验），
+    但预检如果不知道这条规则，就会把一个合法设计判成违例。
+    """
+    client = HttpComfyClient(base_url=COMFY_URL)
+    try:
+        object_info = await client.object_info()
+    finally:
+        await client.aclose()
+
+    request = t2va_request()
+    request.mode = VideoMode.I2VA
+    request.first_frame = "grokgen/does_not_need_to_exist_for_shape_check.png"
+    workflow, _ = build_workflow(request, ImageSize(768, 768))
+
+    violations = check_workflow(workflow, object_info)
+    assert not violations, "子目录路径被误判：\n  " + "\n  ".join(str(v) for v in violations)
+
+
+async def test_deployed_gateway_has_ffprobe():
+    """**部署好的那台机器**上要有 ffprobe，否则上传的图读不出尺寸。
+
+    ⚠️ 问的是网关的 `/v1/health`，不是本地环境 ——
+    本地装没装 ffprobe 与生产无关，而且开发机本来就没有（runbook §1）。
+    一条在开发机上必然失败的测试，只会训练人忽略它。
+
+    没有 ffprobe 的后果是静默的：画布退回默认尺寸，首帧被拉伸变形，不报错。
+    """
+    import httpx
+
+    async with httpx.AsyncClient(trust_env=False, timeout=15.0) as client:
+        response = await client.get(f"{GATEWAY_URL}/v1/health")
+
+    response.raise_for_status()
+    gateway = response.json()["gateway"]
+    assert gateway["ffprobe"] is True, (
+        f"网关所在机器（{GATEWAY_URL}）上找不到 ffprobe，上传的图读不出尺寸"
+    )

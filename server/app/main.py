@@ -96,6 +96,8 @@ def create_app(
             `{"gateway": {"status", "version"}, "comfy": {...}}`。
             `comfy` 可达时含 GPU 名与显存读数；不可达时是
             `{"reachable": False, "error": "<原因>"}`。
+            `gateway.ffprobe` 说明这台机器上有没有 ffprobe ——
+            没有的话上传的图读不出尺寸。
         """
         comfy: dict
         try:
@@ -110,7 +112,17 @@ def create_app(
                 "vram_free_bytes": stats.vram_free_bytes,
             }
 
-        return {"gateway": {"status": "ok", "version": gateway_version()}, "comfy": comfy}
+        return {
+            "gateway": {
+                "status": "ok",
+                "version": gateway_version(),
+                # ⚠️ 报告出来，而不是只在启动时 warn 一句。
+                # 缺了它上传的图读不出尺寸，画布就没法按比例推算 ——
+                # 那会静默地退回「用默认尺寸」，表现为画面被拉伸变形。
+                "ffprobe": FfprobeImageProbe.available(),
+            },
+            "comfy": comfy,
+        }
 
     return app
 
