@@ -49,10 +49,13 @@ App 自己不跑任何模型。它提交任务、看进度、看结果；模型�
 1. `AGENTS.md`（本文件）
 2. `Docs/ContextPack.md` —— 当前阶段、当前目标、已知坑、下一步
 3. `Docs/TODO.md` —— 里程碑与任务状态
-4. `Docs/requirement/` —— 需求与验收定义
-5. 相关的 `Docs/design/`、`Docs/architecture/`、`Docs/implementation/` 文档
-6. `Docs/runbooks/home_gpu_server.md`（任务涉及后端、GPU、服务器上的任何东西时）
-7. 最近的 `Docs/experience/YYYY-MM-DD/*.md`
+4. `Docs/README.md` —— 文档放在哪、为什么这么分
+5. `Docs/requirement/` —— 产品需求与验收定义
+6. `Docs/contract/` —— App 与网关的接口契约（任务涉及任何一端的接口时）
+7. 动到哪一端，就读那一端的 `architecture/` 与 `implementation/`：
+   网关看 `server/Docs/`，Android 客户端看 `app/Docs/`
+8. `Docs/runbooks/home_gpu_server.md`（任务涉及后端、GPU、服务器上的任何东西时）
+9. 最近的 `Docs/experience/YYYY-MM-DD/*.md`
 
 项目还在早期，上面有些文件可能**还不存在**。不存在就跳过，并在复述里说明它不存在，
 不要凭空编造它的内容。
@@ -68,9 +71,13 @@ App 自己不跑任何模型。它提交任务、看进度、看结果；模型�
 
 一个 round 内部可以包含多次「改 → 构建 → 测试」，**它不等于一条聊天消息**。
 
+**命名约定：M = Milestone，R = Round，合起来写作 `M1R3`。**
+里程碑是产品级的、跨两端的，划分见 `Docs/requirement/` §9；
+一个里程碑下的轮次划分写在那一端的执行文档里。
+
 ## 1.2 每个 round 结束时必做
 
-1. 写正式总结到 `Docs/experience/YYYY-MM-DD/summary_HH_MM_SS.md`
+1. 写正式总结到 `Docs/experience/YYYY-MM-DD/M1R3_summary.md`（文件名带轮次编号）
 2. 同步更新 `README.md`、`Docs/TODO.md`、`Docs/ContextPack.md`
 3. 若某个文件本轮未受影响，**显式确认它仍然准确**，再决定不改
 
@@ -87,31 +94,39 @@ App 自己不跑任何模型。它提交任务、看进度、看结果；模型�
 
 ## 1.4 新文档放哪
 
-`Docs/` 根目录只保留 `TODO.md`、`ContextPack.md`、`Validation.md`，**不得堆积新文件**。
+**完整的布局与判断规则见 `Docs/README.md`**，这里只留最短的版本：
 
-| 目录 | 放什么 |
+| 放哪 | 什么文档 |
 |---|---|
-| `Docs/requirement/` | 需求文档：做什么、不做什么、验收标准 |
-| `Docs/design/` | 调研、方案比较、范围定义 |
-| `Docs/architecture/` | 结构、分层、接口契约、决策记录 |
-| `Docs/implementation/` | 执行计划与每个里程碑的执行细节 |
-| `Docs/reports/` | 测量与评估产物：性能、显存、生成耗时、退出评审 |
-| `Docs/experience/YYYY-MM-DD/` | 每个 round 的会话总结 |
-| `Docs/runbooks/` | 操作流程：怎么连服务器、怎么起停服务 |
-| `Docs/knowledge/` | 外部来源的原始材料（如导出的对话记录），**只读不改** |
-| `Docs/Q&A/` | 设计提问与调研报告 |
+| 根 `Docs/` | 两端都要读的：产品需求、接口契约、runbook、原始材料、round 总结、TODO、ContextPack |
+| `server/Docs/` | 只有网关关心的：架构、执行文档 |
+| `app/Docs/` | 只有 Android 客户端关心的：架构、执行文档（开发 App 时再建） |
+
+判断方法只有一句：**另一端需要读它吗？** 需要就放根目录。
+
+⚠️ **接口契约必须放根 `Docs/contract/`，没有例外。**
+放进任何一端，另一端就会抄一份，然后两份慢慢对不上，
+而且**不会有任何机制报错** —— 契约不是代码，编译器不管它。
+
+`Docs/` 根目录只直接放 `README.md`、`TODO.md`、`ContextPack.md`，
+其余一律进子目录，**不得堆积新文件**。
 
 移动文档时，**在同一次改动里更新所有引用路径** —— 引用是散文式路径，不是链接，
-失效了不会报错，只会误导下一个读者。
+失效了不会报错，只会误导下一个读者。改完 `grep` 一遍旧路径确认没有残留。
 
 ---
 
 ## 2. 开发管线
 
 ```text
-粗需求 → Docs/requirement/ 需求文档 → Docs/architecture/ 架构文档
-       → Docs/implementation/ 执行文档 → 按执行文档执行
+粗需求 → Docs/requirement/ 产品需求
+       → Docs/contract/ 接口契约（改动跨两端时）
+       → <端>/Docs/architecture/ 架构文档
+       → <端>/Docs/implementation/ 执行文档
+       → 按执行文档一个 round 一个 round 地执行
 ```
+
+`<端>` 是 `server` 或 `app`。
 
 **顺序不可跳。** 发现某个决策站不住时，回去改上游文档，改完再继续；
 **不要在代码里绕过文档里写死的决策**。

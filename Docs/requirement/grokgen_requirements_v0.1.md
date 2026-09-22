@@ -88,9 +88,8 @@ Android App
 ComfyUI 自己的模型缓存和 offload 机制就能覆盖大部分情况，网关只在它不够用时才介入重启。
 
 ⚠️ 代价要认：**SD 的模型得放进 ComfyUI 的 `models/checkpoints/`**。
-实测该目录目前是空的（只有占位文件），SD 的模型还在 `~/stable-diffusion/` 那边。
-**接入 SD 之前要先解决模型文件的归位**——软链接或者在 ComfyUI 的
-`extra_model_paths.yaml` 里加一条路径，都行，但得先做。
+**已于 2026-09-22 用目录级软链接解决并验证**，做法与验证见
+`server/Docs/implementation/M1_gateway_mainline.md` §5。
 
 `~/stable-diffusion/stable-diffusion-webui/` 保留不动，当作备用与对照，只是不进 v0.1 的链路。
 
@@ -192,7 +191,8 @@ busy
 
 1. **同一时间只允许一个重 GPU 任务在跑**，由网关强制，不靠调用方自觉
 2. 切换前先停掉当前服务：先尝试 ComfyUI 的 unload，不干净就直接杀进程
-3. **轮询 `nvidia-smi` 等显存降到安全阈值再启动另一个**，不要固定 sleep
+3. **轮询显存，等它降到安全阈值再启动另一个**，不要固定 sleep
+   （架构文档后来定了用 ComfyUI 的 `/system_stats` 读显存，不用 `nvidia-smi`）
 4. App 上显示「正在切换模型服务」并给出预计耗时
 
 ⚠️ **对 16 GB 显存这个规模，重启服务往往比复杂的热切换更可靠。**
@@ -210,7 +210,7 @@ busy
 > ⚠️ **本节的结论已被 2026-09-22 的后续实测推翻。**
 > 下面「转码必须做」的判断成立于「只能用现有 DaSiWa workflow」这个前提；
 > 架构文档定了网关自己拼 workflow 之后，**ComfyUI 原生就能直接输出 H.264 MP4，
-> 不需要转码**。见 `Docs/architecture/gateway_architecture_v0.1.md` §2.4。
+> 不需要转码**。见 `server/Docs/architecture/gateway_architecture_v0.1.md` §2.4。
 > 本节保留，因为它记录了老输出文件的真实格式——那些文件仍然需要兜底转码。
 
 ### 6.1 实测：现有 workflow 的输出不是 MP4
@@ -249,21 +249,11 @@ ffmpeg -i in.webm -c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p \
    而去碰 GPU 反而可能和正在跑的生成任务抢资源。
 
 **原始文件保留**，转码产物另存。将来手机端硬解 AV1 普及了，可以直接切回原文件。
-- 接口形状（示意，最终以架构文档为准）：
 
-```text
-GET  /library/images?page=1
-GET  /library/videos?page=1
-GET  /library/item/{id}
-GET  /library/item/{id}/thumbnail
-GET  /library/item/{id}/stream      # 支持 Range
-GET  /library/item/{id}/download
-POST /uploads/image
-POST /jobs                          # 提交生成任务
-GET  /jobs/{id}                     # 任务状态
-GET  /gpu/status
-POST /gpu/switch
-```
+### 6.3 接口形状
+
+接口契约**已单独成文**：`Docs/contract/gateway_api_v0.1.md`。
+那里是 App 与网关之间唯一的约定，本文档不重复列举 endpoint。
 
 ## 7. 非功能需求
 
@@ -307,7 +297,7 @@ shift_audio:  3                 # 就是默认值
 > ⚠️ **`768x432` 只对官方模板那条路有效。**
 > 网关直接调原生节点时，`width` / `height` 必须是 **32 的倍数**，
 > 而 `432 / 32 = 13.5`。走网关时用 `736x416`。
-> 依据与说明见 `Docs/implementation/P1_gateway_mainline.md` §2.1。
+> 依据与说明见 `server/Docs/implementation/M1_gateway_mainline.md` §2.1。
 
 两个超分开关（`RTX Upscaler & Refiner`、`Latent Upscaler`）**默认都关**，
 而且**不要同时开** —— 两个都很吃显存和时间。想要质量就只开 Latent，想要速度就只开 RTX。
@@ -330,15 +320,15 @@ Video VAE 和 Audio VAE 接反过，报错是 `MiniMax H3 VAE MISMATCH`。
 开发机上 Android SDK、JDK 17、adb 都已就绪（具体路径见 `AGENTS.md` §4）。
 **手机需要装 Tailscale 并登录同一个账号** —— 这是 App 能用的前提。
 
-## 9. 分期与验收
+## 9. 里程碑与验收
 
-| 阶段 | 内容 | 验收标准 |
+| 里程碑 | 内容 | 验收标准 |
 |---|---|---|
-| **P1 后端主链路** | 网关能提交一个 MiniMax H3 I2VA 任务、报告状态、取回视频 | 用 `curl` 从开发机提交一次，拿到能播的 mp4 |
-| **P2 Android 原型** | 连接、上传图片、填 prompt、提交、播放结果 | 在真机上完整走一遍 I2VA，不碰电脑 |
-| **P3 媒体库** | 扫描输出目录，缩略图，网格，在线播放 | 手机上能翻到历史输出并播放，首屏不超过明显卡顿 |
-| **P4 接入 SD** | SD 生图 + 服务切换 + 显存释放 | 在 App 里从 MiniMax 切到 SD 再切回来，两次都能出结果，中途显存确实降下去过 |
-| **P5 高级功能** | LoRA、REF2VA、多参考、音频上传、收藏、批量下载 | 逐项定义 |
+| **M1 后端主链路** | 网关能提交一个 MiniMax H3 I2VA 任务、报告状态、取回视频 | 用 `curl` 从开发机提交一次，拿到能播的 mp4 |
+| **M2 Android 原型** | 连接、上传图片、填 prompt、提交、播放结果 | 在真机上完整走一遍 I2VA，不碰电脑 |
+| **M3 媒体库** | 扫描输出目录，缩略图，网格，在线播放 | 手机上能翻到历史输出并播放，首屏不超过明显卡顿 |
+| **M4 接入 SD** | SD 生图 + 服务切换 + 显存释放 | 在 App 里从 MiniMax 切到 SD 再切回来，两次都能出结果，中途显存确实降下去过 |
+| **M5 高级功能** | LoRA、REF2VA、多参考、音频上传、收藏、批量下载 | 逐项定义 |
 
 ## 10. 已定与待定
 
@@ -424,7 +414,7 @@ grokgen/
 但 `sudo` 需要密码、用户 linger 没开，装不了系统服务。
 所以**第一版沿用 ComfyUI 已经在用的那个办法**：`setsid nohup ... &` 脱离 SSH 会话。
 想升级成 systemd 服务（自动重启、开机自起）需要一次交互式的 sudo 或
-`loginctl enable-linger`，那是后面的事，不挡 P1。
+`loginctl enable-linger`，那是后面的事，不挡 M1。
 
 ⚠️ 别忘了 runbook §4 那个坑：**网关活着的前提是 WSL 发行版没被回收。**
 
@@ -439,6 +429,6 @@ grokgen/
 2. **任务与媒体的元数据存哪？** SQLite 还是 JSON 索引文件。
 3. **缩略图什么时候生成？** 生成任务结束时顺手做（和转码同一步），还是首次访问时懒生成。
 4. ~~SD 的模型怎么归位到 ComfyUI~~ **已完成（2026-09-22）**：目录级软链接，
-   已验证 ComfyUI 跟随。见 `Docs/implementation/P1_gateway_mainline.md` §5。
+   已验证 ComfyUI 跟随。见 `server/Docs/implementation/M1_gateway_mainline.md` §5。
 5. ~~服务器有没有能访问 GitHub 的 SSH key~~ **已完成**：key 已加，
    服务器上 clone 成功，`git pull` 部署链路实跑通过。

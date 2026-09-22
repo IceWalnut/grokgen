@@ -355,56 +355,20 @@ vram_free:  15647768576   (约 14.6 GiB)
 
 ## 6. 对 App 的 API
 
-前缀 `/v1`。全部 JSON，除了上传和媒体流。
+**接口契约不在本文档里**，在 `Docs/contract/gateway_api_v0.1.md`。
 
-### 6.1 任务
+那份文档放在仓库根目录的 `Docs/` 下，因为 **App 和网关都要读它**。
+放进 `server/Docs/` 的话，App 那边会抄一份，然后两份慢慢对不上，
+而且不会有任何机制报错。
 
-```text
-POST   /v1/jobs                 提交任务 → {job_id}
-GET    /v1/jobs                 列表，可按状态过滤
-GET    /v1/jobs/{id}            单个任务，含 state / stage / progress / outputs
-POST   /v1/jobs/{id}/cancel     取消
-```
-
-提交视频任务的 body：
-
-```json
-{
-  "type": "h3_video",
-  "mode": "I2VA",
-  "prompt": { "description": "...", "soundscape": "...", "music": "..." },
-  "first_frame_asset_id": "img_20260922_ab12",
-  "last_frame_asset_id": null,
-  "width": 768, "height": 432,
-  "duration_seconds": 5,
-  "steps": 8, "seed": null,
-  "advanced": { "sampler": "res_multistep", "scheduler": "simple",
-                "shift_video": 11, "shift_audio": 3 }
-}
-```
-
-⚠️ **App 传 `duration_seconds`，网关回 `actual_duration_seconds` 和 `length_frames`。**
-理由见 §2.2。
-
-### 6.2 上传、媒体库、GPU
-
-```text
-POST   /v1/uploads/image        multipart → {asset_id}
-GET    /v1/library/items        ?kind=video|image&page=&source=
-GET    /v1/library/items/{id}
-GET    /v1/library/items/{id}/thumb
-GET    /v1/library/items/{id}/stream     支持 Range
-GET    /v1/library/items/{id}/download
-GET    /v1/gpu                  {mode, vram_total, vram_free, loaded_service}
-POST   /v1/gpu/free
-WS     /v1/events               任务与 GPU 的状态变化
-```
+本文档只负责网关内部怎么实现那份契约；契约本身的字段、状态取值、错误形状，
+以那份文档为准。
 
 ⚠️ **`/stream` 的 Range 支持要自己确认一遍。** FastAPI/Starlette 的
 `FileResponse` 支持 Range，但这是播放能不能拖进度条的唯一依赖，
 **属于必须写测试的那一类**，不能靠"框架应该支持"。
 
-### 6.3 网关与 ComfyUI 的目录关系
+### 6.1 网关与 ComfyUI 的目录关系
 
 网关和 ComfyUI 在同一台机器、同一个用户（`icewalnut`）下，
 所以**媒体库直接读文件系统，不经过 ComfyUI 的 `/view`**：
@@ -430,11 +394,11 @@ WS     /v1/events               任务与 GPU 的状态变化
 3. **缩略图在 `postprocessing` 阶段做，还是首次访问时懒生成。**
    倾向前者——反正那时文件刚写完，磁盘缓存还热。
 4. ~~SD 的模型怎么归位到 ComfyUI~~ **已完成：目录级软链接，已验证 ComfyUI 跟随。**
-   见 `Docs/implementation/P1_gateway_mainline.md` §5。
+   见 `server/Docs/implementation/M1_gateway_mainline.md` §5。
 5. ~~`width`/`height` 有没有整除约束~~ **已核实：必须是 32 的倍数。**
    节点源码里声明了 `step=32`，latent 空间尺寸是 `height // 16, width // 16`。
    同时发现**首帧是拉伸、尾帧是居中裁剪**，两者处理方式不同。
-   详见 `Docs/implementation/P1_gateway_mainline.md` §2.1。
+   详见 `server/Docs/implementation/M1_gateway_mainline.md` §2.1。
 
 ---
 
