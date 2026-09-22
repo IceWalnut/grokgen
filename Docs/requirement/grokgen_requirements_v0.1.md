@@ -304,6 +304,11 @@ shift_audio:  3                 # 就是默认值
 
 首次测试的安全分辨率与时长：`768x432`，3 秒。
 
+> ⚠️ **`768x432` 只对官方模板那条路有效。**
+> 网关直接调原生节点时，`width` / `height` 必须是 **32 的倍数**，
+> 而 `432 / 32 = 13.5`。走网关时用 `736x416`。
+> 依据与说明见 `Docs/implementation/P1_gateway_mainline.md` §2.1。
+
 两个超分开关（`RTX Upscaler & Refiner`、`Latent Upscaler`）**默认都关**，
 而且**不要同时开** —— 两个都很吃显存和时间。想要质量就只开 Latent，想要速度就只开 RTX。
 
@@ -433,7 +438,7 @@ grokgen/
    影响 App 端的实时性与耗电。
 2. **任务与媒体的元数据存哪？** SQLite 还是 JSON 索引文件。
 3. **缩略图什么时候生成？** 生成任务结束时顺手做（和转码同一步），还是首次访问时懒生成。
-4. **SD 的模型怎么归位到 ComfyUI？** 软链接还是 `extra_model_paths.yaml`。见 §4.2 的警告。
-5. **服务器有没有能访问 GitHub 的 SSH key？** 仓库是 private，
-   服务器要 `git clone` 就得有一把公钥挂在 GitHub 账号上。还没确认。
-   没有的话，在服务器上 `ssh-keygen` 并把公钥加进 GitHub 即可（一次性）。
+4. ~~SD 的模型怎么归位到 ComfyUI~~ **已完成（2026-09-22）**：目录级软链接，
+   已验证 ComfyUI 跟随。见 `Docs/implementation/P1_gateway_mainline.md` §5。
+5. ~~服务器有没有能访问 GitHub 的 SSH key~~ **已完成**：key 已加，
+   服务器上 clone 成功，`git pull` 部署链路实跑通过。

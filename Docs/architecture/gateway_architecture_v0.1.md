@@ -429,11 +429,12 @@ WS     /v1/events               任务与 GPU 的状态变化
    但要处理 ComfyUI 重启导致 ws 断开的情况。
 3. **缩略图在 `postprocessing` 阶段做，还是首次访问时懒生成。**
    倾向前者——反正那时文件刚写完，磁盘缓存还热。
-4. **SD 的模型怎么归位到 ComfyUI**（`models/checkpoints/` 目前是空的）。
-   需求 §10.4 的遗留项，接 SD 之前必须解决。
-5. **`width`/`height` 有没有整除约束。** 节点声明是 `min=32, max=16384`，
-   没写 step，但 DiT 模型通常要求是 patch size 的倍数。**还没核实**，
-   P1 跑通之前先只用已知可用的分辨率。
+4. ~~SD 的模型怎么归位到 ComfyUI~~ **已完成：目录级软链接，已验证 ComfyUI 跟随。**
+   见 `Docs/implementation/P1_gateway_mainline.md` §5。
+5. ~~`width`/`height` 有没有整除约束~~ **已核实：必须是 32 的倍数。**
+   节点源码里声明了 `step=32`，latent 空间尺寸是 `height // 16, width // 16`。
+   同时发现**首帧是拉伸、尾帧是居中裁剪**，两者处理方式不同。
+   详见 `Docs/implementation/P1_gateway_mainline.md` §2.1。
 
 ---
 
