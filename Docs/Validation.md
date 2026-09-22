@@ -36,12 +36,19 @@
 | server | `server/.venv/bin/python -m pytest --collect-only`（导入期错误在这里暴露） |
 | app | `./gradlew build` |
 
-⭐ **网关有一条可执行的分层判据**：
+⭐ **网关有一条可执行的分层判据**（`VS-13`，落在 `server/tests/test_layering.py`）：
 
-> 在**开发机上、不连服务器**的情况下，除 `comfy/http_client.py` 外的全部测试应当通过。
-> **跑不通就说明有人把 ComfyUI 调用漏到 `core/`、`media/` 或 `api/` 里了。**
+> 扫 `app/` 下每个 `.py` 的 AST，断言除 `comfy/http_client.py` 外
+> **没有模块 import HTTP 库，也没有 ComfyUI 地址的字符串字面量**。
 
-这条是架构文档 §3 那个"唯一硬约束"的检验形式。它是 `VS-13`。
+这条是架构文档 §3 那个"唯一硬约束"的检验形式。
+
+⚠️ 它最初写成「不连服务器时全部测试通过」，**那是个消极判据** ——
+有人在 `core/` 里加了 HTTP 调用而测试恰好没走到那条路，它照样是绿的。
+改成扫源码之后，违例时报出的是**具体哪个文件的哪一行**。
+
+⚠️ 硬编码那条只看**代码里的字符串字面量**，跳过 docstring ——
+文档里解释默认地址是无害的，拿 docstring 发不了请求。
 
 ### Level 2：自动化测试（不需要 GPU）
 
@@ -103,8 +110,8 @@ VS 编号**跨里程碑稳定**：一旦分配就不改用途。废弃时保留�
 | VS-9 | 串行队列：连续提交 3 个任务，任何时刻只有一个处于 `submitted`/`running` | 2 | M1R5 | ⬜ |
 | VS-10 | 失败时 `failure_reason.detail` **带着 ComfyUI `node_errors` 的原文** | 2 | M1R5 | ⬜ |
 | VS-11 | `/stream` 的 Range：`curl -r 0-1023` 返回 206 且 `Content-Range` 正确 | 3 | M1R6 | ⬜ |
-| VS-12 | 部署链路：`deploy_server.sh` 能把改动送上去并起服务，端口确实在监听 | 1/3 | M1R1 | ⬜ |
-| VS-13 | **分层约束**：不连服务器时，除 `http_client.py` 外测试全通过 | 1 | M1R2 | ⬜ |
+| VS-12 | 部署链路：`deploy_server.sh` 能把改动送上去并起服务，端口确实在监听 | 1/3 | M1R1 | ✅ **M1R1**。`version` 回的是刚推的 commit、`vram_total` 是真实读数 —— 后者证明它确实跑在服务器上 |
+| VS-13 | **分层约束**：除 `http_client.py` 外不许 import HTTP 库、不许有地址字面量 | 1 | M1R1 | ✅ **M1R1**。改成扫 AST，比「测试能跑通」这个消极判据强。⚠️ 两条都植入缺陷验证过会红，报的是具体文件与行号 |
 
 M2 起（Android 客户端）的 VS 从 **VS-14** 开始编。
 

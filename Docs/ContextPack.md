@@ -6,18 +6,19 @@
 ⚠️ **只有这一份，不在 `server/Docs/` 或 `app/Docs/` 下另建** ——
 两份"当前状态"一旦不一致，哪份都不能信。
 
-最后更新：2026-09-22
+最后更新：2026-09-22（M1R1 完成后）
 
 ---
 
 ## 1. 现在在哪
 
-**文档阶段刚结束，代码一行还没写。**
+**M1R1 已完成：网关骨架在服务器上跑起来了，部署链路全程打通。**
 
-已经定稿的：产品需求、接口契约（草案）、验证标准、网关架构、M1 执行文档。
-基础设施已通：git 仓库、服务器 clone、部署脚本的拉取部分、SD 模型软链接。
+从开发机 `curl --noproxy '*' http://icewalnut-1060.tail22a711.ts.net:7869/v1/health`
+能拿到 200，里面带着真实的 GPU 显存读数。`scripts/deploy_server.sh` 全程可用。
 
-**下一步是 M1R1** —— 建 `server/` 骨架，让 `/v1/health` 能从开发机访问到。
+**下一步是 M1R2** —— workflow 构造器。纯函数、不碰网络，全部在开发机上测，
+对应 VS-1〜VS-4。
 
 ---
 
@@ -30,16 +31,16 @@ Android App 当手机端的远程生成控制台，家里那台 4080 SUPER 的 W
 
 ---
 
-## 3. 本轮（M1R1）要验证的假设
+## 3. 本轮（M1R2）要验证的假设
 
-**`scripts/deploy_server.sh` 的执行部分能跑通。**
+**workflow 拼得对不对，能在开发机上回答。**
 
-这个脚本的前半段（服务器 `git fetch` + `reset --hard`）已经实跑验证过；
-**后半段——建 venv、装依赖、起 uvicorn、确认端口监听——从未被执行过。**
-M1R1 就是它的验收。
+M1R2 写 `server/app/comfy/workflows/h3_video.py`：输入一个请求对象，
+输出 workflow dict，**不碰网络、不读文件**。
 
-⚠️ **脚本报错要修脚本，不要绕过去手工起服务。**
-手工起来一次，这个脚本就永远是坏的，而且没人会发现。
+⚠️ 这一轮**不要去占 GPU**。拼错 workflow 是这个项目的主要风险，
+而 ComfyUI 的报错未必指向真正的原因 —— 先在纯逻辑层把它测穿，
+再到 M1R3 去问 ComfyUI 认不认。
 
 ---
 
@@ -86,7 +87,23 @@ M1 用 `736x416`，那是服务器上已有成品的真实分辨率。
 原生节点里 `first_frame` 用 `crop="disabled"`（直接拉伸），
 `last_frame` 用 `crop="center"`。**首帧宽高比不匹配时会变形，不是裁剪。**
 
-### 4.6 WSL 会自己停下来
+### 4.6 装 Python 包：两台机器的做法不一样
+
+**服务器**：代理变量指向 `127.0.0.1:7890`，而那个端口**没有进程监听**。
+`pip install` 必须摘掉代理并走镜像 —— `scripts/deploy_server.sh` 已经处理好了，
+手工在那边装包时要记得同样处理。
+
+**开发机**：代理是活的，但**缺 `python3.10-venv`**（`ensurepip` 不存在，装它要 sudo）。
+所以开发机建 venv 用 `~/.local/bin/uv`：
+
+```bash
+cd server && uv venv .venv --python 3.10
+uv pip install --python .venv/bin/python -r requirements.txt
+```
+
+⚠️ 两端建 venv 的工具不同（uv vs `python3 -m venv`），这是一处已知的不对称。
+
+### 4.7 WSL 会自己停下来
 
 Windows 那侧有个计划任务按住它。网关是常驻服务，
 **它活着的前提是 WSL 发行版没被回收**。连不上时先查那个任务。（runbook §4）

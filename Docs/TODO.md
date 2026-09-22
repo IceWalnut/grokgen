@@ -31,8 +31,8 @@
 
 | 轮次 | 要解决的问题 | VS | 状态 |
 |---|---|---|---|
-| M1R1 | 网关骨架 + 部署链路首次实跑 | VS-12 | ⬜ |
-| M1R2 | workflow 构造器正确 | VS-1〜4, VS-13 | ⬜ |
+| M1R1 | 网关骨架 + 部署链路首次实跑 | VS-12, VS-13 | ✅ |
+| M1R2 | workflow 构造器正确 | VS-1〜4 | 🔄 下一轮 |
 | M1R3 | ComfyUI 客户端 + 第一次真实生成 | VS-5〜7 | ⬜ |
 | M1R4 | 上传 + 首帧真的生效 | VS-8 | ⬜ |
 | M1R5 | 任务状态机与串行队列 | VS-9, VS-10 | ⬜ |
@@ -86,6 +86,11 @@
 
 ### 不挡任何里程碑
 
+- ⬜ **`server/requirements.lock.txt` 从未被用来安装过**。它是 M1R1 部署后从服务器
+  `pip freeze` 出来的记录，部署脚本装的仍是不锁版本的 `requirements.txt`。
+  真要靠它复现环境时可能装不出来。
+- ⬜ **`HttpComfyClient` 的错误分支一条都没实际触发过**（超时、非 2xx、`devices` 为空）。
+  按分层它豁免于开发机测试，但「只有代码没有证据」这件事要记着。
 - ⬜ **网关升级成 systemd 服务**（自动重启、开机自起）。
   需要一次交互式 sudo 或 `loginctl enable-linger`。
   现在用 `setsid nohup`，和 ComfyUI 一样。
