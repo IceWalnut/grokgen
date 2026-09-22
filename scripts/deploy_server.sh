@@ -17,6 +17,16 @@ SSH_HOST="icewalnut-wsl"
 REMOTE_REPO="\$HOME/workspace/grokgen"
 GATEWAY_PORT=7869
 
+# ⚠️ 服务器上装 Python 包必须走镜像，而且必须摘掉代理。
+#
+# 那台机器的 WSL 从 Windows 继承了 http_proxy=127.0.0.1:7890，
+# 但那个端口上没有任何进程在监听（runbook §6.3）。2026-09-22 实测：
+#   带代理访问 pypi.org       → 20 秒超时，http=000
+#   摘代理直连 pypi.org       → 不稳定
+#   清华镜像                  → http=200，0.22 秒，755 KB/s
+# 镜像地址放成变量，某天它不可用时改这一行即可。
+PIP_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple"
+
 RESTART=1
 [[ "${1:-}" == "--no-restart" ]] && RESTART=0
 
@@ -36,6 +46,13 @@ ssh "$SSH_HOST" bash -s <<REMOTE
 set -euo pipefail
 cd $REMOTE_REPO
 
+# reset --hard 会静默丢掉服务器上的本地改动。按约定那边不该有改动，
+# 但「丢弃」这件事必须是可见的，否则排查时会完全想不到这里。
+if [[ -n "\$(git status --porcelain)" ]]; then
+    echo "⚠️  服务器上有未提交改动，下面的 reset --hard 会丢掉它们："
+    git status --short
+fi
+
 git fetch --quiet origin
 git reset --hard --quiet origin/main
 echo "当前版本: \$(git log -1 --format='%h %s')"
@@ -44,8 +61,15 @@ echo "当前版本: \$(git log -1 --format='%h %s')"
 if [[ ! -d server/.venv ]]; then
     python3 -m venv server/.venv
 fi
-server/.venv/bin/pip install --quiet --upgrade pip
-server/.venv/bin/pip install --quiet -r server/requirements.txt
+
+# 只摘掉 pip 这一次调用的代理变量，不改整个脚本或那台机器的环境 ——
+# 代理配置是用户自己在用的（runbook §6.3）。
+env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY \
+    -u all_proxy -u ALL_PROXY \
+    server/.venv/bin/pip install --quiet --upgrade pip -i $PIP_INDEX_URL
+env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY \
+    -u all_proxy -u ALL_PROXY \
+    server/.venv/bin/pip install --quiet -i $PIP_INDEX_URL -r server/requirements.txt
 REMOTE
 
 if [[ $RESTART -eq 1 ]]; then

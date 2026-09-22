@@ -1,0 +1,6 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "integration: 需要连真实的 ComfyUI，默认跳过；用 -m integration 手动触发",
+]

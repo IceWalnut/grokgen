@@ -1,0 +1,15 @@
+# grokgen 网关依赖
+#
+# ⚠️ 这个 venv 与 ComfyUI 的 venv 分开，不要合并 —— ComfyUI 的依赖很重且随更新变动。
+#
+# 服务器上安装时必须摘掉代理并走国内镜像，见 scripts/deploy_server.sh：
+# 那台机器的 http_proxy 指向一个没有进程监听的端口。
+
+fastapi
+uvicorn[standard]
+httpx
+pydantic
+pydantic-settings
+
+pytest
+pytest-asyncio
