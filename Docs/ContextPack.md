@@ -6,19 +6,18 @@
 ⚠️ **只有这一份，不在 `server/Docs/` 或 `app/Docs/` 下另建** ——
 两份"当前状态"一旦不一致，哪份都不能信。
 
-最后更新：2026-09-22（M1R1 完成后）
+最后更新：2026-09-22（M1R2 完成后）
 
 ---
 
 ## 1. 现在在哪
 
-**M1R1 已完成：网关骨架在服务器上跑起来了，部署链路全程打通。**
+**M1R1、M1R2 已完成。** 网关骨架在服务器上跑着，部署链路全程打通；
+workflow 构造器写完并测穿（47 条测试，不占 GPU）。
 
-从开发机 `curl --noproxy '*' http://icewalnut-1060.tail22a711.ts.net:7869/v1/health`
-能拿到 200，里面带着真实的 GPU 显存读数。`scripts/deploy_server.sh` 全程可用。
-
-**下一步是 M1R2** —— workflow 构造器。纯函数、不碰网络，全部在开发机上测，
-对应 VS-1〜VS-4。
+**下一步是 M1R3** —— ComfyUI 客户端 + 第一次真实生成。
+先手工把构造器生成的 workflow `curl` 给 `/prompt` 看它认不认，再写进代码。
+对应 VS-5〜VS-7。**这一轮会真的占用 GPU 几分钟。**
 
 ---
 
@@ -31,16 +30,18 @@ Android App 当手机端的远程生成控制台，家里那台 4080 SUPER 的 W
 
 ---
 
-## 3. 本轮（M1R2）要验证的假设
+## 3. 本轮（M1R3）要验证的假设
 
-**workflow 拼得对不对，能在开发机上回答。**
+**ComfyUI 认不认我们拼的这张图，跑出来是不是正常画面。**
 
-M1R2 写 `server/app/comfy/workflows/h3_video.py`：输入一个请求对象，
-输出 workflow dict，**不碰网络、不读文件**。
+M1R2 只证明了「我们自己认为图是对的」。这一轮要拿到 ComfyUI 的回答。
 
-⚠️ 这一轮**不要去占 GPU**。拼错 workflow 是这个项目的主要风险，
-而 ComfyUI 的报错未必指向真正的原因 —— 先在纯逻辑层把它测穿，
-再到 M1R3 去问 ComfyUI 认不认。
+顺序：先用 T2VA（不接图，代价最小）手工 `curl` 提交，
+`node_errors` 为空再写进代码。
+
+⚠️ **提交前先 `curl /queue` 确认 ComfyUI 空闲**，模型加载是分钟级固定开销。
+⚠️ **拿到 mp4 之后必须实际看一眼画面** —— 格式对、时长对、任务成功，
+画面仍然可能是一片黑或纯噪声，前面几步一个都查不出来。
 
 ---
 
@@ -103,7 +104,14 @@ uv pip install --python .venv/bin/python -r requirements.txt
 
 ⚠️ 两端建 venv 的工具不同（uv vs `python3 -m venv`），这是一处已知的不对称。
 
-### 4.7 WSL 会自己停下来
+### 4.7 用户实际在用的模板不在 ComfyUI 目录里
+
+`Docs/knowledge/DasiwaMinimaxH3WorkflowsT2VA_cMMH3V23.json` 是**第一手依据**
+（采样 profile、对齐指令行写法、`N/A` 规则都来自它）。
+它原本只在 Windows 的 `E:\Downloads\minimax-h3\`，已拷进仓库。
+ComfyUI 自带的 V13/V16 是**不同的版本**，别拿它们当准。
+
+### 4.8 WSL 会自己停下来
 
 Windows 那侧有个计划任务按住它。网关是常驻服务，
 **它活着的前提是 WSL 发行版没被回收**。连不上时先查那个任务。（runbook §4）

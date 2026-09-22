@@ -282,22 +282,31 @@ SD WebUI 在 `~/stable-diffusion/stable-diffusion-webui`（独立 venv），
 
 ### 8.2 MiniMax H3 的推荐参数（作为 App 的默认值）
 
-这组值是上一轮对着实际部署核对出来的，**App 的默认参数应当照这个填**：
+> ⚠️ **本节在 2026-09-22 的 M1R2 更正过。** 原来那组值把两套 profile 混在了一起。
 
-```text
-sampler_name: res_multistep     # 不是 euler；这个 workflow 的文档推荐 res_multistep
-scheduler:    simple
-steps:        8–12 起步，质量不够再往 16–25 加
-shift_video:  11 或 12          # 官方节点默认 12
-shift_audio:  3                 # 就是默认值
-```
+参数分**两套，不能混用**。取自用户在用的 DaSiWa V23 模板里
+`Settings & Post-Processing` 那段注释（`Docs/knowledge/` 下的 JSON）：
 
-首次测试的安全分辨率与时长：`768x432`，3 秒。
+| | 非 Turbo | **Turbo（用户实际在用，App 默认）** |
+|---|---|---|
+| Sampler | `res_multistep` | **`euler`** |
+| Scheduler | `simple` | `simple` |
+| Steps | 25 | **8**（文档给的区间是 4–8） |
+| Shift Video | 10–12 | **6**（区间 6–8） |
+| Shift Audio | 3–5 | **3**（区间 4–5，模板存的是 3） |
 
-> ⚠️ **`768x432` 只对官方模板那条路有效。**
-> 网关直接调原生节点时，`width` / `height` 必须是 **32 的倍数**，
-> 而 `432 / 32 = 13.5`。走网关时用 `736x416`。
-> 依据与说明见 `server/Docs/implementation/M1_gateway_mainline.md` §2.1。
+**原来错在哪**：本节最初写的是「sampler 用 `res_multistep`、shift_video 用 11 或 12、
+steps 8–12」—— **8 步属于 Turbo 区间，而那两个值是非 Turbo 那一套的**。
+这组混合值来自更早一次对着截图的分析，当时没有分 profile 的概念。
+
+**用户实际在用的是 Turbo**：V23 的 Settings 面板存的是
+`euler / simple / steps 8 / shift_video 6 / shift_audio 3`。
+
+首次测试的安全分辨率与时长：`736x416`、5 秒（换算后 124 帧 = 5.17 秒）。
+
+⚠️ **`width` / `height` 必须是 32 的倍数**（节点声明了 `step=32`）。
+需求早期写过的 `768x432` 无效 —— `432 / 32 = 13.5`。
+`736x416` 是服务器上已有成品的真实分辨率。
 
 两个超分开关（`RTX Upscaler & Refiner`、`Latent Upscaler`）**默认都关**，
 而且**不要同时开** —— 两个都很吃显存和时间。想要质量就只开 Latent，想要速度就只开 RTX。

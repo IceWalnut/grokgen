@@ -79,34 +79,80 @@ last_frame      IMAGE    可选
 
 ### 2.1 视频链路的节点图
 
-网关按下面这张图拼 JSON，提交到 ComfyUI 的 `POST /prompt`：
+⚠️ **本节在 M1R2 被重写过。** 原来那张图是按 `/object_info` 逐个节点推的，
+有三处与实际模板不符（见 §2.1.1）。现在这张按**两份真实模板**画：
+
+* `Docs/knowledge/DasiwaMinimaxH3WorkflowsT2VA_cMMH3V23.json` ——
+  **用户实际在用的那份**，sigma shift 与采样参数以它为准；
+* ComfyUI 自带的 `video_minimax_h3_{i2v,t2v}.json` —— 官方模板，帧数公式取自它。
+
+两份在采样链的结构上完全一致。
+
+网关按下面这张图拼 API 格式的 JSON，提交到 `POST /prompt`：
 
 ```text
-UNETLoader(h3ErosMax_beta5_fp8)
-        │
-        ▼
-MiniMaxH3SigmaShift(shift_video=11, shift_audio=3)
-        │ model
-        ▼
-     KSampler ◄── positive ── MiniMaxH3ImageToVideo ◄── CLIPLoader
-        │      ◄── negative ── ConditioningZeroOut       ◄── VAELoader(video)
-        │      ◄── latent   ──┘                          ◄── LoadImage(首帧/尾帧)
-        ▼
-    VAEDecode(video vae) ──> IMAGE ─┐
-    VAEDecodeAudio(audio vae) ─> AUDIO ─┤
-                                        ▼
-                            CreateVideo(fps=24, codec="h264")
-                                        │ VIDEO
-                                        ▼
-                            SaveVideo(format="auto", codec="auto")
+UNETLoader(unet_name, "default")
+   │ MODEL
+   ├─(turbo 时)─> LoraLoaderModelOnly(turbo_lora, 1.0)
+   ▼
+MiniMaxH3SigmaShift(model, shift_video, shift_audio)
+   │ MODEL
+   ├──> BasicGuider(model, conditioning) ───────────> GUIDER ─┐
+   └──> BasicScheduler(model, "simple", steps, 1.0) ─> SIGMAS ─┤
+KSamplerSelect(sampler_name) ────────────────────────> SAMPLER ─┤
+RandomNoise(noise_seed) ─────────────────────────────> NOISE ───┤
+                                                                ▼
+CLIPLoader(clip, "minimax", "default") ─┐            SamplerCustomAdvanced
+VAELoader(video_vae) ─┬──────────────────┤                   │ LATENT
+LoadImage(首帧) ──────┼──> MiniMaxH3ImageToVideo             ├─> VAEDecode(video_vae) ──────> IMAGE ┐
+LoadImage(尾帧) ──────┘     (clip, vae, prompt, width,       └─> VAEDecodeAudio(audio_vae) ─> AUDIO ┤
+                             height, length,                                                        ▼
+                             first_frame?, last_frame?)                       CreateVideo(images, fps=24, audio)
+                             │ [0] CONDITIONING ──> BasicGuider                                     │ VIDEO
+                             └ [1] LATENT ──────> SamplerCustomAdvanced                             ▼
+                                                                               SaveVideo(prefix, "auto", "auto")
 ```
 
-两个要点：
+三个要点：
 
-1. **`KSampler` 需要 `negative`，而 H3 节点只输出 `positive`。**
-   用 `ConditioningZeroOut` 从 positive 造一个空的 negative。
-2. **`MiniMaxH3SigmaShift` 是单独一个节点**，不是采样器的参数。
-   它接在 model 上，`shift_video` 默认 12、`shift_audio` 默认 3。
+1. ⭐ **同一个 LATENT 同时喂 `VAEDecode` 和 `VAEDecodeAudio`。**
+   H3 的 latent 是音画合一的，两个 VAE 各取所需。这是从模板的连线里读出来的。
+2. ⭐ **`CLIPLoader` 必须给 `type="minimax"`。** 漏了它 CLIP 加载不起来，
+   而这个值只看 `/object_info` 是看不出来该填什么的。
+3. **模式的全部差别就是接几张图。** T2VA 不接、I2VA 接 `first_frame`、
+   FL2VA 两个都接 —— 三种模式共用同一个 `MiniMaxH3ImageToVideo` 节点。
+   官方的 t2v 与 i2v 模板用的就是同一个 subgraph，这证实了 §1.2 的决定。
+
+⭐ 输出走原生 `CreateVideo` + `SaveVideo(format="auto")`，产出 **H.264 + AAC 的 MP4**。
+不用 V23 里那个 `DaSiWa_EnhancedVideoCombine` —— 它默认 Auto 编码，
+产出的就是之前发现的那些 AV1/WebM。
+
+#### 2.1.1 原来那张图错在哪
+
+| 原来写的 | 模板实际用的 | 后果 |
+|---|---|---|
+| `KSampler` | `SamplerCustomAdvanced` + `BasicGuider` + `BasicScheduler` + `KSamplerSelect` + `RandomNoise` | 结构整个不同 |
+| 用 `ConditioningZeroOut` 造 negative | **`BasicGuider` 没有 negative 输入** | 那个 hack 是多余的 |
+| `CLIPLoader` 只给文件名 | 还要 `type="minimax"` | 会加载失败 |
+
+⚠️ `MiniMaxH3SigmaShift` **原来写对了，不要删**。
+官方模板里确实没有它，但用户在用的 V23 有，Settings 面板在驱动它。
+
+#### 2.1.2 采样参数分两套 profile，不能混用
+
+取自 V23 模板 `Settings & Post-Processing` 那段注释：
+
+| | 非 Turbo | **Turbo（用户实际在用）** |
+|---|---|---|
+| Sampler | `res_multistep` | **`euler`** |
+| Steps | 25 | **8** |
+| Shift Video | 10–12 | **6** |
+| Shift Audio | 3–5 | **3** |
+
+⚠️ **需求文档 §8.2 最初把两套混在了一起**（`res_multistep` + shift 11 + 8 步）——
+8 步属于 Turbo 区间，而那两个值是非 Turbo 的。已在需求文档里更正。
+
+落地在 `server/app/models/video_job.py` 的 `TURBO_PROFILE` / `FULL_PROFILE`。
 
 ### 2.2 时长换算：帧数是 17k+5 的格子
 
@@ -144,10 +190,18 @@ def seconds_to_length(seconds: float, fps: float = 24.0) -> int:
 只有首帧：
 
 ```text
-For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.
+For the target video, at 0.00 seconds into the target video, Picture 1 (from Shot 1) is fully referenced.
 
 integrated_multimodal_description: ...
 ```
+
+⚠️ **写法有两个版本，本项目按上面这个（不带括号）。**
+Director 的**文档**里写的是 `<Picture 1> (from [Shot 1])`，带尖括号和方括号；
+而用户在用的 V23 模板里，作者自己给的示例（MarkdownNote `#2695`）**不带括号**。
+
+两种写法 ComfyUI 都不会报错，**差别只体现在生成质量上，没有便宜的验证方式** ——
+属于「不会报错只会变差」那一类。选模板示例的理由是：那是作者的实际用法，
+也是用户一直在用的。代码注释里记了另一种写法的存在。
 
 首帧 + 尾帧：
 
@@ -157,7 +211,11 @@ How the reference pictures align with the target video — Picture 1 (from Shot 
 integrated_multimodal_description: ...
 ```
 
-`{duration}` 用**换算后的实际秒数**，不是用户填的那个数。
+`{duration}` 用**换算后的实际秒数**，不是用户填的那个数（5 秒 → `5.17`）。
+分隔符是 em-dash `—`，不是普通连字符。
+
+⚠️ **这是本轮最容易写错、且写错不会报错的一处**：
+模型会把尾帧对到错误的时间点，只表现为结果变差。`VS-3` 专门钉这一条。
 
 **这一段由网关拼装，App 不碰。** App 只传三段内容：画面描述、环境声、背景音乐。
 网关负责拼成：
@@ -167,10 +225,14 @@ integrated_multimodal_description: ...
 
 integrated_multimodal_description: <画面描述>
 
-overall_soundscape: <环境声>
+overall_soundscape: <环境声，留空则整段省略>
 
-non_diegetic_music: <背景音乐>
+non_diegetic_music: <背景音乐，留空则填 N/A>
 ```
+
+⚠️ **空的 `non_diegetic_music` 要填 `N/A`，不是留空。**
+这是 Director 的自动规则（V23 模板 Quick Start 注释里写明），
+绕开 Director 之后必须自己复制。
 
 ⚠️ **这段拼装逻辑必须有单元测试**，而且测试要能在开发机上跑——
 它是纯字符串处理，不需要 GPU，没有理由不测。
