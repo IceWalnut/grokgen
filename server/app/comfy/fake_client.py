@@ -223,7 +223,12 @@ class FakeComfyClient:
         prompt.record = JobRecord(
             prompt_id=prompt_id,
             status=status,
-            completed=True,
+            # ⚠️ **失败时 `completed` 是 False，不是 True。**
+            # ComfyUI 的这个字段含义是「成功完成」而不是「结束了」——
+            # M1R7 实测一条被中断的任务：status_str="error" 且 completed=False。
+            # 替身此前写成 True，与真实行为不符，
+            # 于是「失败后无限轮询」这个 bug 被 141 条离线测试全部放过。
+            completed=(status == "success"),
             messages=messages or [],
         )
 

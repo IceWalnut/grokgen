@@ -83,14 +83,33 @@ class QueueState:
     pending: tuple[str, ...]
 
 
+#: ComfyUI 的 `status_str` 里表示「这次执行已经结束」的取值。
+#:
+#: M1R7 实测到的只有这两个：成功是 `success`，报错或被中断都是 `error`。
+#: 用白名单而不是「不等于某个值」，是因为将来若出现一个表示「进行中」的新取值，
+#: 白名单会保守地继续等待，而黑名单会把它误判成已结束。
+TERMINAL_COMFY_STATUSES = frozenset({"success", "error"})
+
+
 @dataclass(frozen=True)
 class JobRecord:
     """`/history/{prompt_id}` 里一条任务记录。
 
     Attributes:
         prompt_id: ComfyUI 给的任务 id。
-        status: ComfyUI 的 `status_str`，成功是 `"success"`。
-        completed: 是否已经结束（成功或失败都算结束）。
+        status: ComfyUI 的 `status_str`。成功是 `"success"`，
+            报错和被中断都是 `"error"`。
+        completed: ComfyUI 的 `completed` 字段**原样**。
+
+            ⚠️ **它的含义是「成功完成」，不是「结束了」。**
+            被中断或报错的任务是 `status_str="error"` 且 `completed=False`。
+            M1R7 实测过一条被中断的记录，三个字段是：
+            `status_str="error"`、`completed=False`、
+            messages 里有 `execution_interrupted`。
+
+            ⇒ **判断「这次执行结束了没有」要用 `finished`，不要用这个字段。**
+            用错的后果是失败和取消都永远等不到终态 —— 而任务超时默认是关的，
+            所以是真的无限轮询下去。这个 bug 在 M1R7 冒烟时被抓到过一次。
         outputs: 产出的文件。
         messages: ComfyUI 的执行消息原文，失败时的线索都在这里。
     """
@@ -100,6 +119,15 @@ class JobRecord:
     completed: bool
     outputs: list[OutputFile] = field(default_factory=list)
     messages: list = field(default_factory=list)
+
+    @property
+    def finished(self) -> bool:
+        """这次执行是否已经结束 —— 成功、报错、被中断都算。
+
+        Returns:
+            `status` 落在 `TERMINAL_COMFY_STATUSES` 里就是 `True`。
+        """
+        return self.status in TERMINAL_COMFY_STATUSES
 
 
 class ComfyUnreachable(Exception):

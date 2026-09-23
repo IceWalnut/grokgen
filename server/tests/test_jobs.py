@@ -522,3 +522,81 @@ async def test_closing_the_manager_rejects_new_submissions():
 
     with pytest.raises(ManagerClosing):
         submit(manager)
+
+
+# ============ M1R7 冒烟抓到的真 bug：completed 不等于「结束了」 ============
+
+
+def test_an_interrupted_record_counts_as_finished():
+    """用 M1R7 实测到的真实记录形状钉住 `finished` 的语义。
+
+    ⚠️ **这条测试是一个线上 bug 的复现。**
+
+    ComfyUI 的 `completed` 字段含义是「成功完成」，不是「结束了」。
+    一条被中断的记录实测长这样：
+
+        status_str = "error"
+        completed  = False
+        messages   = [..., ["execution_interrupted", {...}], ...]
+
+    网关原来用 `record.completed` 判断「这次执行结束了没有」，
+    于是被中断和报错的任务**永远等不到终态** —— 而任务超时默认是关的，
+    所以是真的无限轮询下去。
+
+    141 条离线测试当时全绿，因为替身把失败写成了 `completed=True`，
+    **替身与真实行为不符**。这条测试直接用实测到的字段值，不经过替身。
+    """
+    from app.comfy.client import JobRecord
+
+    interrupted = JobRecord(
+        prompt_id="abbd1085-6b20-4cfd-9729-b1a02f1e9bbb",
+        status="error",
+        completed=False,
+        messages=[
+            ["execution_start", {"prompt_id": "abbd1085"}],
+            ["execution_interrupted", {"node_id": "h3_image_to_video"}],
+        ],
+    )
+
+    assert interrupted.finished is True, "被中断的记录必须算「已结束」"
+    assert interrupted.completed is False, "completed 要保留 ComfyUI 的原值，不要粉饰"
+
+
+def test_a_successful_record_is_both_finished_and_completed():
+    """成功的记录两个字段一致 —— 这正是当初混淆的原因。"""
+    from app.comfy.fake_client import finished_record
+
+    record = finished_record()
+    assert record.finished is True
+    assert record.completed is True
+
+
+def test_a_record_with_an_unknown_status_is_not_treated_as_finished():
+    """认不出的 status 保守地当作「还没结束」，继续等。
+
+    ⚠️ 方向是刻意的：判早了会把一个还在跑的任务当成结束，
+    从而放行下一个任务去抢显存；判晚了只是多等几轮。
+    """
+    from app.comfy.client import JobRecord
+
+    unknown = JobRecord(prompt_id="x", status="running", completed=False)
+    assert unknown.finished is False
+
+
+async def test_a_cancelled_job_reaches_its_terminal_state(monkeypatch):
+    """取消一个正在跑的任务，能落到 cancelled —— 用真实的失败记录形状。
+
+    这是上面那个 bug 的端到端复现：`fail()` 现在产出 `completed=False`，
+    修复前这条会卡在轮询里直到测试超时。
+    """
+    manager, comfy = await make_manager()
+    job = submit(manager)
+    await manager.wait_for(job.job_id, {JobState.SUBMITTED})
+    comfy.begin_running(job.prompt_id)
+    await manager.wait_for(job.job_id, {JobState.RUNNING})
+
+    await manager.cancel(job.job_id)
+    await manager.wait_for(job.job_id, {JobState.CANCELLED}, timeout=5.0)
+
+    assert job.state is JobState.CANCELLED
+    await manager.aclose()

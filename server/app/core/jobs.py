@@ -757,7 +757,7 @@ class JobManager:
                 await self._fail(job, FailureKind.COMFY_UNREACHABLE, str(exc))
                 return None
 
-            if record is not None and record.completed:
+            if record is not None and record.finished:
                 if job.cancel_requested and record.status != "success":
                     # 我们要求取消，而它确实没有成功 —— 这就是中断落地的样子。
                     await self._set_state(job, JobState.CANCELLED)
