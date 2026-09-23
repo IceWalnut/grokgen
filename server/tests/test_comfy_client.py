@@ -9,6 +9,8 @@ M1R2 总结里记过「`HttpComfyClient` 的错误分支一条都没实际触发
 本轮把那一条补上。
 """
 
+import json
+
 import httpx
 import pytest
 
@@ -167,3 +169,92 @@ async def test_history_of_failed_job_keeps_messages():
     assert record.status == "error"
     assert record.outputs == []
     assert "OOM" in str(record.messages)
+
+
+# ---- M1R5 新增：队列、中断、从队列删除 ----
+
+
+async def test_queue_parses_running_and_pending_prompt_ids():
+    """`/queue` 的两个列表各自取出 prompt_id。
+
+    ⚠️ **prompt_id 在每个条目的下标 1**，条目形如
+    `[number, prompt_id, prompt, extra_data, outputs]`。
+    取错槽位不会报错，只会让「任务开始跑了没」这个判断永远为假 ——
+    表现为任务卡在 submitted，而不是一个明确的错误。
+    """
+    body = {
+        "queue_running": [[0, "pid-running", {}, {}, []]],
+        "queue_pending": [[1, "pid-a", {}, {}, []], [2, "pid-b", {}, {}, []]],
+    }
+    client = client_with(lambda request: httpx.Response(200, json=body))
+    state = await client.queue()
+
+    assert state.running == ("pid-running",)
+    assert state.pending == ("pid-a", "pid-b")
+
+
+async def test_queue_skips_malformed_entries_instead_of_blowing_up():
+    """一条畸形条目不该让整次查询变成异常。
+
+    轮询循环拿这个结果去判断任务状态：宁可这一轮少看见一个 id，
+    也不该因此把一个正常任务判成失败。
+    """
+    body = {
+        "queue_running": [[0], "not-a-list", [1, 42, {}], [2, "pid-ok", {}, {}, []]],
+        "queue_pending": [],
+    }
+    client = client_with(lambda request: httpx.Response(200, json=body))
+    state = await client.queue()
+
+    assert state.running == ("pid-ok",)
+    assert state.pending == ()
+
+
+async def test_queue_of_an_idle_comfyui_is_empty():
+    """ComfyUI 空闲时两个元组都是空的，不是 None。"""
+    client = client_with(
+        lambda request: httpx.Response(200, json={"queue_running": [], "queue_pending": []})
+    )
+    state = await client.queue()
+
+    assert state.running == ()
+    assert state.pending == ()
+
+
+async def test_interrupt_posts_to_the_interrupt_route():
+    """中断打的是 `POST /interrupt`。"""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        return httpx.Response(200, json={})
+
+    client = client_with(handler)
+    await client.interrupt()
+
+    assert seen == {"method": "POST", "path": "/interrupt"}
+
+
+async def test_delete_queued_sends_the_prompt_id_in_a_delete_list():
+    """从队列删除用的是 `POST /queue` 带 `delete` 列表。"""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={})
+
+    client = client_with(handler)
+    await client.delete_queued("pid-x")
+
+    assert seen["path"] == "/queue"
+    assert seen["body"] == {"delete": ["pid-x"]}
+
+
+async def test_control_endpoint_failures_become_unreachable():
+    """控制接口返回非 2xx 时翻译成 ComfyUnreachable，而不是静默当成功。"""
+    client = client_with(lambda request: httpx.Response(500, text="boom"))
+
+    with pytest.raises(ComfyUnreachable):
+        await client.interrupt()

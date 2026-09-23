@@ -11,9 +11,11 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from app.api import uploads
+from app.api import jobs, uploads
 from app.comfy.client import ComfyClient, ComfyUnreachable
 from app.comfy.http_client import HttpComfyClient
+from app.core.config import settings
+from app.core.jobs import JobManager
 from app.media.probe import FfprobeImageProbe, ImageProbe
 
 logger = logging.getLogger(__name__)
@@ -49,7 +51,9 @@ def gateway_version() -> str:
 
 
 def create_app(
-    comfy_client: ComfyClient | None = None, image_probe: ImageProbe | None = None
+    comfy_client: ComfyClient | None = None,
+    image_probe: ImageProbe | None = None,
+    job_manager: JobManager | None = None,
 ) -> FastAPI:
     """组装 FastAPI 应用。
 
@@ -58,8 +62,10 @@ def create_app(
             传 `None` 时用真实的 `HttpComfyClient`。
         image_probe: 注入的图片探测器。测试传 `FakeImageProbe`；
             传 `None` 时用 `FfprobeImageProbe`。
+        job_manager: 注入的任务管理器。测试传一个轮询间隔为 0、
+            关掉预检的实例；传 `None` 时按配置建一个。
 
-    这两个参数是开发机上能跑测试的原因 —— 它们各自封着一个开发机没有的
+    前两个参数是开发机上能跑测试的原因 —— 它们各自封着一个开发机没有的
     外部依赖（GPU 上的 ComfyUI、以及 ffprobe），
     是架构文档 §3「外部调用必须可替换」那条约束的落点。
 
@@ -77,11 +83,21 @@ def create_app(
             logger.warning(
                 "找不到 ffprobe，上传图片时读不出尺寸，画布将无法按图片比例推算"
             )
+        app.state.jobs = job_manager or JobManager(
+            app.state.comfy,
+            poll_interval_seconds=settings.job_poll_interval_seconds,
+            timeout_seconds=settings.job_timeout_seconds,
+        )
+        await app.state.jobs.start()
         yield
+        # ⚠️ 顺序不能反：先停任务管理器，再关客户端的连接池。
+        # 反过来的话 worker 可能正拿着一个已经关掉的连接池去轮询。
+        await app.state.jobs.aclose()
         await app.state.comfy.aclose()
 
     app = FastAPI(title="grokgen gateway", lifespan=lifespan)
     app.include_router(uploads.router)
+    app.include_router(jobs.router)
 
     @app.get("/v1/health")
     async def health() -> dict:

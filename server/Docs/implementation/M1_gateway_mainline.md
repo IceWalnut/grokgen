@@ -82,7 +82,7 @@ img = _resize(last_frame[:1],  width, height, "center")     # 尾帧：居中裁
 | M1R2 | workflow 拼得对不对 | 构造器的全部用例在开发机上通过 | VS-1〜4, VS-13 |
 | M1R3 | ComfyUI 认不认这张图，能不能出视频 | 拿到一个画面正常的 mp4 | VS-5, VS-6, VS-7 |
 | M1R4 | 首帧图能不能真的生效 | 产物首帧肉眼可辨认是上传的图 | VS-8 |
-| M1R5 | 并发提交会不会互相踩 | 三个任务严格串行，失败原因带得回来 | VS-9, VS-10 |
+| M1R5 | 并发提交会不会互相踩 | 三个任务严格串行，失败原因带得回来 | VS-9, VS-10, VS-17, VS-18 |
 | M1R6 | 手机能不能拖进度条 | Range 请求返回 206 且 `Content-Range` 正确 | VS-11 |
 | M1R7 | 整条链路是否可重复验证 | 一条命令跑完全程 | 全部复跑 |
 
@@ -226,24 +226,36 @@ pytest-asyncio
 M1 的简化：状态存在内存里，网关重启就丢。持久化放到 M3 和媒体库索引一起做。
 **但状态机的形状现在就要定对**，后面只是换存储。
 
+⭐ **范围调整（本轮执行时决定）**：任务的四个对外路由
+（`POST /v1/jobs`、`GET /v1/jobs/{id}`、`GET /v1/jobs`、`POST /v1/jobs/{id}/cancel`）
+**从 M1R6 提前到本轮**，因为状态机没有入口就只能靠单元测试看，
+而契约里那几个字段的对齐本来就要跟着状态机一起定。
+M1R6 相应缩成「取回产物 + Range」。
+
+⚠️ **归一化只能做一次。** `normalize()` 在用户没填 seed 时会随机生成一个，
+而 `build_workflow()` 内部会调 `normalize()`。
+如果提交时算一次回给 App、执行时再算一次喂给 ComfyUI，
+**两个 seed 不一样，而且不会报错** —— 用户拿回报的 seed 复现不出那个视频。
+所以探测首帧尺寸与建图都在 `POST /v1/jobs` 的请求路径里做完，
+结果存在 Job 上，worker 只做预检与提交。
+
 **判据**：
 
 - 连续提交 3 个任务，断言**任何时刻只有一个处于 `submitted`/`running`**
 - 用 `fake_client` 模拟 ComfyUI 返回校验错误，断言任务进入 `failed`
   且 `failure_reason` 里**带着 `node_errors` 的原文**
+- 取消的三种情形各自的终态正确（VS-17）
+- 回报的 `normalized.seed` 与 workflow 里实际用的 seed 相同（VS-18）
 
 ---
 
-### M1R6 — 对外的 API
+### M1R6 — 取回产物与 Range
 
-**问题**：把前面几轮的能力按契约暴露出去，并确认视频能被分段取回。
+**问题**：确认视频能被分段取回。
 
-按 `Docs/contract/gateway_api_v0.1.md` 实现：
+⚠️ **提交、状态、列表、取消四个路由已经在 M1R5 做掉了**，本轮只剩：
 
 ```text
-POST /v1/jobs            提交
-GET  /v1/jobs/{id}       状态
-GET  /v1/jobs            列表
 GET  /v1/jobs/{id}/video 取回产物，支持 Range
 ```
 
@@ -254,7 +266,6 @@ M1 先不做完整媒体库，`/jobs/{id}/video` 直接按 `/history` 里记录�
 
 - `curl -r 0-1023` 请求前 1KB，断言返回 `206 Partial Content`
   且 `Content-Range` 头正确
-- 提交响应里带齐契约要求的 `normalized` 三个值与 `notices`
 
 ⚠️ **Range 必须真测。** 它是手机上能不能拖进度条的唯一依赖，
 不能因为「框架应该支持」就跳过。

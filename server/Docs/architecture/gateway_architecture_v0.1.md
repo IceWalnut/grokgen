@@ -310,7 +310,9 @@ server/app/
 class ComfyClient(Protocol):
     async def submit(self, workflow: dict, client_id: str) -> str: ...      # -> prompt_id
     async def history(self, prompt_id: str) -> JobRecord: ...
-    async def interrupt(self) -> None: ...
+    async def queue(self) -> QueueState: ...        # 正在跑的 / 排队中的 prompt_id
+    async def interrupt(self) -> None: ...          # ⚠️ 无参数，打的是当前正在跑的那个
+    async def delete_queued(self, prompt_id: str) -> None: ...  # 从队列里删掉还没开始的
     async def free(self, unload_models: bool, free_memory: bool) -> None: ...
     async def system_stats(self) -> SystemStats: ...
     async def upload_image(self, data: bytes, name: str) -> str: ...
@@ -352,18 +354,29 @@ class ComfyClient(Protocol):
 queued ──> preparing ──> submitted ──> running ──> postprocessing ──> done
    │           │             │            │              │
    └───────────┴─────────────┴────────────┴──────────────┴──> failed
-   │
-   └──> cancelled
+   │           │             │            │
+   └───────────┴─────────────┴────────────┴──> cancelled
 ```
 
 | 状态 | 含义 | 谁来推进 |
 |---|---|---|
 | `queued` | 在网关的队列里等 | 网关 |
 | `preparing` | 上传素材、拼 workflow、必要时切换 GPU 服务 | 网关 |
-| `submitted` | 已提交给 ComfyUI，等它开始 | ComfyUI 的 ws 事件 |
-| `running` | 正在跑，带 `stage` 与 `progress` | ComfyUI 的 ws 事件 |
+| `submitted` | 已提交给 ComfyUI，等它开始 | M1：网关轮询 `/queue`；M2 起：ws 事件 |
+| `running` | 正在跑，带 `stage` 与 `progress` | M1：网关轮询 `/queue`；M2 起：ws 事件 |
 | `postprocessing` | 建缩略图、写索引、必要时转码 | 网关 |
 | `done` / `failed` / `cancelled` | 终态 | — |
+
+⚠️ **`postprocessing` 不能转 `cancelled`。** 走到这一步产物已经出来了，
+取消等于扔掉已经付过的那几分钟 GPU。对它的取消请求返回 409。
+
+⚠️ **`submitted` 可以直接转 `postprocessing`，不必经过 `running`。**
+M1 没有 ws，靠轮询观察状态，一个短任务完全可能在两次轮询之间跑完 ——
+不允许这条边，正常路径上就会抛非法转移。
+
+⚠️ **M1 阶段 `running` 的 `stage` 与 `progress` 恒为空。**
+`GET /queue` 只能回答「它是不是正在跑」，回答不了「跑到哪一段了」。
+细分要等 ws（需求 F2 要求区分 `loading_model`，因为它是分钟级的）。
 
 `running` 的 `stage` 要能区分这几段，因为耗时量级差得很远：
 

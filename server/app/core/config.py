@@ -27,6 +27,8 @@ class Settings(BaseSettings):
             `upload_subfolder` 子目录下，读尺寸时要拼这个路径。
         comfy_timeout_seconds: 单次 ComfyUI 请求的超时，秒。
         gateway_port: 网关自己监听的端口。
+        job_poll_interval_seconds: 轮询任务状态的间隔，秒。
+        job_timeout_seconds: 单个任务的超时，秒；`None` 表示不超时（默认）。
         canvas_target_pixels: 按图片比例推画布时的总像素预算。
         upload_subfolder: 上传的图在 ComfyUI `input/` 下的子目录名。
         h3_unet / h3_clip / h3_turbo_lora: MiniMax H3 的模型文件名，
@@ -41,6 +43,23 @@ class Settings(BaseSettings):
     comfy_timeout_seconds: float = 2.0
 
     gateway_port: int = 7869
+
+    # 轮询 ComfyUI 问「跑完了没」的间隔，秒。
+    # 做成配置项而不是常量，是因为它是一个**取舍**而非正确性问题：
+    # 调小则状态更新更及时、HTTP 请求更多；调大则反之。两个方向都不会出错。
+    job_poll_interval_seconds: float = 1.0
+
+    # 单个任务允许跑多久，秒。**默认 None 表示不超时。**
+    #
+    # ⚠️ 默认留空不是忘了填，是**故意的**：
+    # 现有的耗时读数只有 78 / 88 / 93.8 秒三个，而它们**全部是模型已经在显存里**
+    # 的热启动读数。冷启动要额外付一次分钟级的模型加载（runbook §6.6），
+    # 至今一次都没测过。
+    #
+    # 按 `Docs/Validation.md` §4.2，没有测量条件的数字不可复现 ——
+    # 在这里拍一个秒数，等于用一个编出来的值去杀真实任务，
+    # 而误杀一次的代价是几分钟 GPU。M1R7 冒烟时记一次冷启动读数，再回来定默认值。
+    job_timeout_seconds: float | None = None
 
     # 按首帧图比例推画布时的总像素预算。
     # 736x416 = 306176，是 M1 实测跑通过的尺寸。

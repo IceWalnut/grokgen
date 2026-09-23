@@ -145,3 +145,28 @@ async def test_deployed_gateway_has_ffprobe():
     assert gateway["ffprobe"] is True, (
         f"网关所在机器（{GATEWAY_URL}）上找不到 ffprobe，上传的图读不出尺寸"
     )
+
+
+async def test_the_real_queue_endpoint_can_be_parsed():
+    """M1R5 新增：真实 `/queue` 的响应能被解析成 `QueueState`。
+
+    ⭐ **这条不占 GPU**，所以它是一份廉价的真实证据 ——
+    `queue()` 因此不属于「只有代码没有证据」那一类。
+
+    ⚠️ **但它证明的东西有限。** 队列为空时（多数情况），
+    它只证明「能连上、两个键存在、解析出两个空元组」，
+    **证不了 prompt_id 取的是正确的槽位**。
+    那要等真有任务在队列里时才验得了 —— 判据挂在 M1R7 的冒烟脚本上：
+    「轮询期间至少观察到一次 state == running」。
+    """
+    client = HttpComfyClient(base_url=COMFY_URL)
+    try:
+        state = await client.queue()
+    finally:
+        await client.aclose()
+
+    assert isinstance(state.running, tuple)
+    assert isinstance(state.pending, tuple)
+    # 队列里真有东西时顺带确认取出来的是字符串形状的 id，不是数字或 dict。
+    for prompt_id in state.running + state.pending:
+        assert isinstance(prompt_id, str) and prompt_id

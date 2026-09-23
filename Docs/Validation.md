@@ -33,8 +33,14 @@
 
 | 端 | 命令 |
 |---|---|
-| server | `server/.venv/bin/python -m pytest --collect-only`（导入期错误在这里暴露） |
+| server | `cd server && .venv/bin/python -m pytest --collect-only`（导入期错误在这里暴露） |
 | app | `./gradlew build` |
+
+⚠️ **网关的 pytest 必须在 `server/` 目录下跑，不能在仓库根目录跑。**
+`asyncio_mode = "auto"` 写在 `server/pyproject.toml` 里，从根目录跑 pytest 读不到它，
+于是所有裸 `async def` 测试都报 `async def functions are not natively supported`。
+实测：根目录跑是 10 failed / 80 passed，`server/` 目录跑是 90 passed ——
+**那 10 条是假失败**，容易被当成真的回归去查。
 
 ⭐ **网关有一条可执行的分层判据**（`VS-13`，落在 `server/tests/test_layering.py`）：
 
@@ -54,7 +60,7 @@
 
 | 端 | 命令 |
 |---|---|
-| server | `server/.venv/bin/python -m pytest -m "not integration"` |
+| server | `cd server && .venv/bin/python -m pytest -m "not integration"` |
 | app | `./gradlew test` |
 
 这一层跑在**开发机**上，不占 GPU、不连服务器。
@@ -72,7 +78,7 @@ M1R2 实测三条植入缺陷时，每一条都是单元测试与 golden **同�
 ### Level 2.5：提交前预检（连 ComfyUI，**不占 GPU**）
 
 ```bash
-server/.venv/bin/python -m pytest -m integration    # 默认跳过，手动触发
+cd server && .venv/bin/python -m pytest -m integration    # 默认跳过，手动触发
 ```
 
 ⭐ **这一层存在的理由**：`POST /prompt` **没有「只校验不执行」的模式** ——
@@ -88,7 +94,7 @@ server/.venv/bin/python -m pytest -m integration    # 默认跳过，手动触�
 ### Level 3：真实链路验证（连 ComfyUI，占 GPU）
 
 ```bash
-server/.venv/bin/python -m pytest -m integration    # 默认跳过，手动触发
+cd server && .venv/bin/python -m pytest -m integration    # 默认跳过，手动触发
 scripts/smoke_m1.sh                                 # 端到端冒烟
 ```
 
@@ -129,14 +135,17 @@ VS 编号**跨里程碑稳定**：一旦分配就不改用途。废弃时保留�
 | VS-8 | **I2VA 首帧可辨认是上传的那张图** | 4 | M1R4 | ✅ **M1R4**。两步各验一次：`example.png`（涂鸦，画风独特无含糊）与真上传的跑车图，首帧都可辨认**且不变形** |
 | VS-15 | 上传：`asset_id` 带子目录前缀、**用 ComfyUI 返回的 name**、尺寸从落盘路径读 | 2/3 | M1R4 | ✅ **M1R4**。重名改名那条专门写了测试 —— 用错名字会引用到另一张图**且不报错** |
 | VS-16 | 画布按首帧图比例推导，不变形 | 2/4 | M1R4 | ✅ **M1R4**。768x768 → **544x544**、736x416 → **736x416**。⚠️ **只验了正面** —— 「强行指定尺寸会压扁」那个对照没实跑 |
-| VS-9 | 串行队列：连续提交 3 个任务，任何时刻只有一个处于 `submitted`/`running` | 2 | M1R5 | ⬜ |
-| VS-10 | 失败时 `failure_reason.detail` **带着 ComfyUI `node_errors` 的原文** | 2 | M1R5 | ⬜ |
+| VS-9 | 串行队列：连续提交 3 个任务，任何时刻只有一个处于 `submitted`/`running` | 2 | M1R5 | ✅ **M1R5**。判据是**回放整条转移日志**算峰值，不是采样 —— 状态是分段常数的，逐个转移检查就是完备的。另配两道独立证据：替身在提交边界上自守（不依赖网关记账），以及**正向断言**三个 `submitted` 转移确实发生且顺序正确（否则「三个全卡在 queued」也能让峰值=1 通过）。⚠️ 植入「并发而非串行」验证过会红 |
+| VS-10 | 失败时 `failure_reason.detail` **带着 ComfyUI `node_errors` 的原文** | 2 | M1R5 | ✅ **M1R5**。断言**逐字段相等**而非「不为空」—— 压成字符串也能让「不为空」通过。⚠️ 植入 `str(node_errors)` 验证过会红 |
+| VS-17 | 取消的三种情形：排队中取消**不产生任何 ComfyUI 调用**；运行中取消会先确认「正在跑的是不是这一个」再中断；终态任务取消返回 409 | 2 | M1R5 | ✅ **M1R5**。排队中那条是**正向断言零次 ComfyUI 调用**。另测了取消与完成的竞态 —— 取消晚一步时产物必须保住。⚠️ `interrupt` 的**真实**落地形式没验证，见 M1R5 总结 §5.2 |
+| VS-18 | 提交响应里回报的 `normalized.seed` 与 workflow 里 `RandomNoise` 实际用的 seed **是同一个** | 2 | M1R5 | ✅ **M1R5**。修法是结构性的（整条链路只归一化一次），不是加断言。**另配一条证明风险真实存在的测试**：对同一请求建两次图，seed 确实不同 —— 否则这条判据看起来只是个显然成立的恒等式 |
 | VS-11 | `/stream` 的 Range：`curl -r 0-1023` 返回 206 且 `Content-Range` 正确 | 3 | M1R6 | ⬜ |
 | VS-12 | 部署链路：`deploy_server.sh` 能把改动送上去并起服务，端口确实在监听 | 1/3 | M1R1 | ✅ **M1R1**。`version` 回的是刚推的 commit、`vram_total` 是真实读数 —— 后者证明它确实跑在服务器上 |
 | VS-14 | **提交前预检**：图对着真实 `/object_info` 查形状，零违例 | 2.5 | M1R3 | ✅ **M1R3**。植入「模型文件名写错」验证过会红。⚠️ **只查形状不查语义** —— VAE 接反、连错槽位形状上都合法 |
 | VS-13 | **分层约束**：除 `http_client.py` 外不许 import HTTP 库、不许有地址字面量 | 1 | M1R1 | ✅ **M1R1**。改成扫 AST，比「测试能跑通」这个消极判据强。⚠️ 两条都植入缺陷验证过会红，报的是具体文件与行号 |
 
-M2 起（Android 客户端）的 VS 从 **VS-17** 开始编。
+M2 起（Android 客户端）的 VS 从 **VS-20** 开始编。
+（原本写的是 VS-17，但 M1R5 用掉了 17 与 18 —— 编号只追加不复用，所以往后推。）
 
 ### 三条关于覆盖面的记账规则
 

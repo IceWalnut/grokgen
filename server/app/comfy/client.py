@@ -4,8 +4,9 @@
 `core/`、`media/`、`api/` 里不允许出现任何 HTTP 调用或 ComfyUI 的地址 ——
 这条约束由 `tests/test_layering.py` 强制（VS-13）。
 
-M1R3 加了 `submit` / `history` / `object_info`，M1R4 加了 `upload_image`；
-`interrupt` / `free` / `events` 在 M1R5 之后。
+M1R3 加了 `submit` / `history` / `object_info`，M1R4 加了 `upload_image`，
+M1R5 加了 `queue` / `interrupt` / `delete_queued`（任务状态机与取消要用）；
+`free` / `events` 在 M4（显存切换）与 M2（WebSocket 进度）再加。
 """
 
 from dataclasses import dataclass, field
@@ -62,6 +63,24 @@ class UploadedImage:
     def reference(self) -> str:
         """workflow 里 `LoadImage.image` 该填的值（相对 `input/` 的路径）。"""
         return f"{self.subfolder}/{self.name}" if self.subfolder else self.name
+
+
+@dataclass(frozen=True)
+class QueueState:
+    """ComfyUI 队列的一张快照。
+
+    ⚠️ **这是 M1 里区分「已提交」与「正在跑」的唯一办法。**
+    `/history/{prompt_id}` 只在任务**结束**后才有记录，在排队和执行期间
+    一律返回 `None` —— 光靠它，`running` 这个状态任何输入都构造不出来。
+
+    Attributes:
+        running: 正在执行的 `prompt_id`。ComfyUI 一次只跑一个，
+            但仍用元组，免得将来它改了行为时这里要改类型。
+        pending: 已排队、还没开始的 `prompt_id`，按队列顺序。
+    """
+
+    running: tuple[str, ...]
+    pending: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -187,6 +206,53 @@ class ComfyClient(Protocol):
         Returns:
             `JobRecord`；ComfyUI 还没有这条记录时返回 `None`
             （任务还在排队，不是错误）。
+
+        Raises:
+            ComfyUnreachable: ComfyUI 不可达。
+        """
+        ...
+
+    async def queue(self) -> QueueState:
+        """读 ComfyUI 的队列快照。
+
+        ⚠️ **这个接口不占 GPU**，可以放心轮询。它回答两个问题：
+        「我提交的那个任务开始跑了吗」（`submitted` → `running`），
+        以及「现在正在跑的是不是我要取消的那个」（见 `interrupt`）。
+
+        Returns:
+            `QueueState`。
+
+        Raises:
+            ComfyUnreachable: ComfyUI 不可达。
+        """
+        ...
+
+    async def interrupt(self) -> None:
+        """中断 ComfyUI **当前正在执行**的那个任务。
+
+        ⚠️ **这个接口没有参数，按 prompt_id 取消是做不到的。**
+        它打掉的是此刻正在跑的那一个，不管那是谁提交的。
+        而这台服务器上 ComfyUI 仍监听 `0.0.0.0`，用户自己也在用它的网页界面 ——
+        所以调用方**必须先用 `queue()` 确认正在跑的确实是自己要取消的那个**，
+        否则会打断用户手工提交的生成。
+
+        Raises:
+            ComfyUnreachable: ComfyUI 不可达。
+        """
+        ...
+
+    async def delete_queued(self, prompt_id: str) -> None:
+        """把一个**还没开始执行**的任务从 ComfyUI 的队列里删掉。
+
+        ⚠️ 它只对排队中的任务有效，对正在跑的那个无效（那个要用 `interrupt`）。
+
+        这条路径存在的理由：网关自己的队列容量是 1，本来不会让两个任务同时排在
+        ComfyUI 里。但 ComfyUI 的网页界面也在用同一个队列，所以「我的任务排在
+        别人后面还没开始」这个状态是真实可达的。没有这个接口，那种情况下取消就只剩
+        「打断别人」和「什么都不做、让它跑成孤儿产物」两个都不对的选项。
+
+        Args:
+            prompt_id: 要删掉的任务 id。删一个不存在的 id 不算错误。
 
         Raises:
             ComfyUnreachable: ComfyUI 不可达。

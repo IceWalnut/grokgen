@@ -43,18 +43,25 @@ v0.1 **没有认证**。Tailnet 成员即可访问，整个 tailnet 就是信任
   "width": null,
   "height": null,
   "duration_seconds": 5,
-  "steps": 8,
-  "seed": null,
-  "advanced": {
-    "sampler": "res_multistep",
-    "scheduler": "simple",
-    "shift_video": 11,
-    "shift_audio": 3
-  }
+  "turbo": true,
+  "steps": null,
+  "seed": null
 }
 ```
 
 `mode` 取 `T2VA` / `I2VA` / `FL2VA`。`seed` 为 `null` 时网关随机取一个并回报。
+
+`type` 目前只接受 `"h3_video"`，其他值返回 400。它是 M4 接入 SD 之后的类型判别位，
+现在就留着，免得那时改一次请求体形状。
+
+⭐ **`turbo` 决定的是一整套采样参数，不是一个开关。** 网关有两套 profile：
+`turbo=true` 是 8 步 + `euler` + shift 6.0/3.0，`turbo=false` 是 25 步 +
+`res_multistep` + shift 11.0/3.0。
+
+⚠️ **两套不能混着用** —— 8 步属于 Turbo 区间，而 `res_multistep` + shift 11 是
+非 Turbo 那一套的值。所以网关**不提供逐项覆盖采样参数的入口**：
+`turbo` 选定 profile，`steps` 留空则取该 profile 的默认值。
+实际用的全套参数在响应的 `normalized` 里回报。
 
 ⭐ **`width` / `height` 是可选的**，三种情形：
 
@@ -79,11 +86,15 @@ v0.1 **没有认证**。Tailnet 成员即可访问，整个 tailnet 就是信任
     "height": 416,
     "length_frames": 124,
     "actual_duration_seconds": 5.17,
-    "seed": 849302114
+    "seed": 849302114,
+    "sampler": "euler",
+    "steps": 8,
+    "shift_video": 6.0,
+    "shift_audio": 3.0
   },
   "notices": [
-    "duration_adjusted: 请求 5.00 秒，实际 124 帧 = 5.17 秒",
-    "first_frame_stretched: 首帧图宽高比与 736x416 不一致，将被拉伸"
+    "时长已调整：请求 5.00 秒，实际 124 帧 = 5.17 秒（模型只接受 17k+5 的帧数）",
+    "画布按首帧图的比例推算为 736x416（首帧图 1472x832），避免拉伸变形"
   ]
 }
 ```
@@ -92,11 +103,17 @@ v0.1 **没有认证**。Tailnet 成员即可访问，整个 tailnet 就是信任
 
 - **`actual_duration_seconds`** —— 模型只接受 `17k+5` 的帧数，用户填 5 秒实际得到
   124 帧 = 5.17 秒。不显示的话用户会以为模型不准。
-- **`width` / `height`** —— 必须是 32 的倍数，不是的话网关向上取整。
+- **`width` / `height`** —— 必须是 32 的倍数，不是的话网关向上取整；
+  留空且有首帧图时是**按图片比例推算**出来的，和用户心里的默认值可能完全不同。
 - **`seed`** —— 用户没填时网关生成，回报出来才能复现。
 
+后四个 `sampler` / `steps` / `shift_video` / `shift_audio` 是 `turbo` 选定的那套
+profile 的实际取值。App 不必显著展示，但**要能在详情里看到** ——
+两套 profile 混用会明显影响画质，而那种错不会报错。
+
 ⚠️ **`notices` 是给用户看的中文提示，不是日志。** 它说的是「你要的和你会得到的
-有哪些差别」。App 应当把它显示在提交结果里。
+有哪些差别」，网关生成的就是上面那样的完整中文句子，App 直接显示即可，
+不要按前缀去解析它们。
 
 ### `GET /v1/jobs/{job_id}`
 
@@ -124,6 +141,11 @@ App 上把它和 `sampling` 混成一个「生成中」，用户会以为卡死�
 
 `progress` 只在 `sampling` 阶段有百分比，其余阶段为 `null`。
 
+⚠️ **M1 阶段 `stage` 与 `progress` 恒为 `null`。** 它们的数据来自 ComfyUI 的
+WebSocket 事件，而 M1 只做轮询（执行文档 §1）。网关靠 ComfyUI 的队列接口只能
+区分到 `submitted`（已提交、还没轮到）与 `running`（正在跑），再细分不出来。
+**App 不要把 `stage` 为空当成异常**，等事件流（§6）落地后它才会有值。
+
 完成后 `outputs`：
 
 ```json
@@ -131,6 +153,11 @@ App 上把它和 `sampling` 混成一个「生成中」，用户会以为卡死�
    "duration_seconds": 5.17, "width": 736, "height": 416,
    "codec": "h264", "container": "mp4", "size_bytes": 1921093 }]
 ```
+
+⚠️ **M1 阶段 `outputs` 只填得出 `kind` 和文件位置**（`filename` + `subfolder`，
+它们来自 ComfyUI 的 `/history`）。`item_id` / `duration_seconds` / `codec` /
+`size_bytes` 要读产物文件才知道，那是 M3 媒体库索引的事。
+上面这个形状是**目标形状**，不是 M1 的实际返回。
 
 失败时 `failure_reason`：
 
@@ -149,12 +176,44 @@ App 上把它和 `sampling` 混成一个「生成中」，用户会以为卡死�
 ⚠️ **`detail` 要原样带上 ComfyUI 的 `node_errors`，不要压成一句话。**
 排障时它是唯一有用的信息。App 可以折叠显示，但不能丢。
 
-### 其余
+### `GET /v1/jobs`
+
+列表，按 `created_at` **倒序**（最新的在前）。
 
 ```text
-GET  /v1/jobs?state=running&limit=20     列表，按创建时间倒序
-POST /v1/jobs/{job_id}/cancel            取消；已完成的任务返回 409
+GET /v1/jobs?state=running&limit=20
 ```
+
+`state` 可选，给了就只返回该状态的任务。`limit` 可选，默认 50，上限 200。
+
+```json
+{ "items": [ { "job_id": "...", "state": "...", "...": "同 GET /v1/jobs/{job_id}" } ] }
+```
+
+⚠️ **外面套一层 `items`，不要直接返回数组。** 以后要加总数或分页游标时，
+裸数组没有地方放，而改形状意味着两端一起改。
+
+每个元素与 `GET /v1/jobs/{job_id}` **形状完全相同**，不做精简版 ——
+队列页要显示的东西（状态、进度、失败原因）详情页也要显示，
+分成两种形状只会让 App 写两套解析。
+
+### `POST /v1/jobs/{job_id}/cancel`
+
+取消一个任务。返回取消后的任务对象，形状同 `GET /v1/jobs/{job_id}`。
+
+| 任务当前状态 | 结果 |
+|---|---|
+| `queued` / `preparing` | 直接变 `cancelled`，不会被送去 ComfyUI |
+| `submitted` / `running` | 网关请求 ComfyUI 中断，任务变 `cancelled` |
+| `done` / `failed` / `cancelled` | **409**，已经是终态了 |
+
+任务不存在返回 404。
+
+⚠️ **取消运行中的任务有一个网关必须处理的细节。** ComfyUI 的中断接口
+**没有参数，中断的是它当前正在跑的那一个**，不是按任务 id 取消。
+而这台服务器上 ComfyUI 自己的网页界面也在用。
+所以网关在中断前会先查 ComfyUI 正在跑的是不是这个任务，
+**不是的话就只把任务标成取消，不发中断请求** —— 否则会打断用户手工提交的生成。
 
 ---
 

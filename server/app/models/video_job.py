@@ -5,8 +5,9 @@
 """
 
 from enum import Enum
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # MiniMax H3 的采样参数分两套 profile，取自用户在用的 DaSiWa V23 模板里
 # "Settings & Post-Processing" 那段注释（`Docs/knowledge/` 下的 JSON）。
@@ -51,11 +52,22 @@ class PromptParts(BaseModel):
 class VideoJobRequest(BaseModel):
     """App 提交的一次视频生成请求。
 
+    ⚠️ **字段名与线上的 JSON 名不完全一致**：契约（`Docs/contract/gateway_api_v0.1.md` §2）
+    里叫 `first_frame_asset_id` / `last_frame_asset_id`，这里叫 `first_frame` /
+    `last_frame`。用 pydantic 的 alias 把两者对上，**线上以契约为准**，
+    而代码里保留短名 —— 否则 M1R2 已经验证稳定的 workflow 构造器和它的 golden
+    文件都要跟着改一遍，那是没必要的回归风险。
+    `populate_by_name=True` 让两种名字都能构造，现有测试不受影响。
+
     Attributes:
+        type: 任务类型判别位。目前只接受 `"h3_video"`。
+            M4 接入 Stable Diffusion 后会有第二种取值，现在留着，
+            免得那时要改一次请求体形状、两端一起动。
         mode: 生成模式。
         prompt: 三段式 prompt。
-        first_frame: 首帧图在 ComfyUI `input/` 下的文件名；`T2VA` 时为 `None`。
-        last_frame: 尾帧图文件名；只有 `FL2VA` 用。
+        first_frame: 首帧图在 ComfyUI `input/` 下的路径（就是上传接口返回的
+            `asset_id`）；`T2VA` 时为 `None`。线上字段名是 `first_frame_asset_id`。
+        last_frame: 尾帧图，只有 `FL2VA` 用。线上字段名是 `last_frame_asset_id`。
         width / height: 期望画布尺寸，像素。**可选** ——
             留空且有首帧图时，网关按图片宽高比推算画布（契约 §2）。
             **默认就应该留空**：首帧是拉伸不是裁剪，比例不符会变形且不报错。
@@ -64,10 +76,13 @@ class VideoJobRequest(BaseModel):
         steps / seed: 留空时取 profile 默认值 / 随机。
     """
 
+    model_config = ConfigDict(populate_by_name=True)
+
+    type: Literal["h3_video"] = "h3_video"
     mode: VideoMode
     prompt: PromptParts
-    first_frame: str | None = None
-    last_frame: str | None = None
+    first_frame: str | None = Field(default=None, alias="first_frame_asset_id")
+    last_frame: str | None = Field(default=None, alias="last_frame_asset_id")
     width: int | None = Field(default=None, ge=32)
     height: int | None = Field(default=None, ge=32)
     duration_seconds: float = Field(default=5.0, gt=0)

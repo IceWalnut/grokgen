@@ -11,6 +11,7 @@ from app.comfy.client import (
     GpuStats,
     JobRecord,
     OutputFile,
+    QueueState,
     UploadedImage,
 )
 from app.core.config import settings
@@ -199,6 +200,99 @@ class HttpComfyClient:
             subfolder=body.get("subfolder", subfolder),
             size_bytes=asset.get("size"),
         )
+
+    async def queue(self) -> QueueState:
+        """读 `/queue`，取出正在跑的与排队中的 `prompt_id`。
+
+        流程说明：
+            1. GET `/queue`，响应形如
+               `{"queue_running": [...], "queue_pending": [...]}`；
+            2. 两个列表里每个条目都是一个**数组**，形如
+               `[number, prompt_id, prompt, extra_data, outputs]`，
+               `prompt_id` 在下标 1；
+            3. 取不出 `prompt_id` 的条目直接跳过，不让一条畸形数据
+               把整次查询变成异常 —— 这个接口的调用方（轮询循环）
+               宁可这一轮少看见一个 id，也不该因此把任务判成失败。
+
+        ⚠️ **这个接口不占 GPU。** 轮询期间每轮调一次的代价可以忽略。
+
+        Returns:
+            `QueueState`。ComfyUI 空闲时两个元组都是空的。
+
+        Raises:
+            ComfyUnreachable: ComfyUI 不可达。
+        """
+        body = await self._get_json("/queue")
+
+        def prompt_ids(key: str) -> tuple[str, ...]:
+            """从 `/queue` 的一个列表里挑出所有 `prompt_id`。"""
+            entries = body.get(key) or []
+            return tuple(
+                entry[1]
+                for entry in entries
+                if isinstance(entry, (list, tuple))
+                and len(entry) > 1
+                and isinstance(entry[1], str)
+            )
+
+        return QueueState(
+            running=prompt_ids("queue_running"), pending=prompt_ids("queue_pending")
+        )
+
+    async def interrupt(self) -> None:
+        """中断 ComfyUI 当前正在执行的任务。
+
+        ⚠️ **无参数，打的是此刻正在跑的那一个，不管是谁提交的。**
+        调用方必须先用 `queue()` 确认那确实是自己要取消的任务，
+        否则会打断用户在 ComfyUI 网页界面上手工提交的生成。
+
+        Returns:
+            无。成功即表示中断请求已被 ComfyUI 接受 ——
+            **不代表任务已经停止**，停止是异步发生的，
+            调用方要继续轮询 `/history` 才能看到最终结果。
+
+        Raises:
+            ComfyUnreachable: 请求失败或返回非 2xx。
+        """
+        await self._post_json("/interrupt", {})
+
+    async def delete_queued(self, prompt_id: str) -> None:
+        """把一个还没开始执行的任务从 ComfyUI 队列里删掉。
+
+        Args:
+            prompt_id: 要删的任务 id。ComfyUI 对不存在的 id 也返回 2xx，
+                所以「删一个已经开始跑的任务」不会报错，**只是没有效果** ——
+                调用方要靠 `queue()` 先判断它到底在不在排队。
+
+        Returns:
+            无。
+
+        Raises:
+            ComfyUnreachable: 请求失败或返回非 2xx。
+        """
+        await self._post_json("/queue", {"delete": [prompt_id]})
+
+    async def _post_json(self, path: str, payload: dict) -> None:
+        """POST 一个 JSON 请求，不关心响应体，把任何失败翻译成 `ComfyUnreachable`。
+
+        给 `/interrupt`、`/queue` 这类「只看成功与否」的控制接口用。
+        `/prompt` 不走这里 —— 它要把校验失败区分出来，见 `submit`。
+
+        Args:
+            path: 相对路径。
+            payload: JSON 请求体。
+
+        Returns:
+            无。
+
+        Raises:
+            ComfyUnreachable: 请求失败、超时或返回非 2xx。
+        """
+        try:
+            response = await self._client.post(path, json=payload)
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise ComfyUnreachable(f"{settings.comfy_base_url}{path} 调用失败: {exc!r}") from exc
 
     async def history(self, prompt_id: str) -> JobRecord | None:
         """查一次任务的结果。
