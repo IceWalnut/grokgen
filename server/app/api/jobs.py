@@ -13,6 +13,7 @@ import logging
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.comfy.client import ComfyUnreachable
@@ -321,3 +322,96 @@ async def cancel_job(request: Request, job_id: str) -> JobResponse:
     except ComfyUnreachable as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return _to_response(job)
+
+
+def _resolve_output_path(job: Job) -> Path:
+    """把任务产物的位置解析成一个可以安全读取的绝对路径。
+
+    流程说明：
+        1. 从 `job.outputs` 取第一个产物（M1 一个任务只有一个视频）；
+        2. 拼到 ComfyUI 的输出根目录下；
+        3. `resolve()` 之后断言它仍在输出根目录之内；
+        4. 确认文件真的存在。
+
+    ⚠️ **第 3 步不是形式主义。** `filename` 与 `subfolder` 来自 ComfyUI
+    `/history` 响应，那是**外部输入**，不是网关自己生成的。
+    没有这一步，一个 `subfolder` 为 `../../..` 的记录就能让这个接口
+    读出输出目录之外的任意文件 —— 而网关没有认证，
+    tailnet 里任何设备都能调它（契约 §1）。
+
+    Args:
+        job: 已经处于 `done` 的任务。
+
+    Returns:
+        产物文件的绝对路径。
+
+    Raises:
+        HTTPException: 任务还没完成（409）、没有产物或文件不存在（404）、
+            路径逃出了输出目录（404，**不用 403** —— 403 等于告诉对方
+            「这个路径存在但你不能看」，那本身就是一条信息）。
+    """
+    if job.state is not JobState.DONE:
+        raise HTTPException(
+            status_code=409,
+            detail=f"任务 {job.job_id} 还没有产物，当前状态是 {job.state.value}",
+        )
+
+    if not job.outputs:
+        # 任务是 done 却没有产物 —— 这是网关自己的状态不一致，不是客户端的错。
+        logger.error("任务 %s 处于 done 但 outputs 为空", job.job_id)
+        raise HTTPException(
+            status_code=500, detail=f"任务 {job.job_id} 已完成但没有记录任何产物"
+        )
+
+    output = job.outputs[0]
+    root = settings.resolved_output_dir().resolve()
+    candidate = (root / output.subfolder / output.filename).resolve()
+
+    if not candidate.is_relative_to(root):
+        logger.error(
+            "任务 %s 的产物路径逃出了输出目录：subfolder=%r filename=%r",
+            job.job_id,
+            output.subfolder,
+            output.filename,
+        )
+        raise HTTPException(status_code=404, detail=f"没有任务 {job.job_id} 的产物")
+
+    if not candidate.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=f"任务 {job.job_id} 的产物文件不在磁盘上：{output.subfolder}/{output.filename}",
+        )
+
+    return candidate
+
+
+@router.get("/{job_id}/video")
+async def get_job_video(request: Request, job_id: str) -> FileResponse:
+    """取回任务产出的视频，支持 Range 请求。
+
+    ⭐ **Range 是手机上能拖进度条的唯一依赖。** 这里不自己实现它 ——
+    Starlette 的 `FileResponse` 已经会解析 `Range` 头、返回 206、
+    设置 `Content-Range`，并默认带上 `Accept-Ranges: bytes`。
+    所以这个函数的责任只有一条：**把正确且安全的文件路径交给它**。
+
+    ⚠️ 正因为 Range 是框架给的，VS-11 那条「Range 必须真测」反而更要做 ——
+    要测的是我们的接线对不对，不是框架对不对。
+
+    Args:
+        request: 用来取任务管理器。
+        job_id: 任务 id。
+
+    Returns:
+        `FileResponse`，`media_type` 是 `video/mp4`。
+
+    Raises:
+        HTTPException: 任务不存在（404）、还没完成（409）、
+            产物不存在（404）、状态不一致（500）。详见 `_resolve_output_path`。
+    """
+    try:
+        job = request.app.state.jobs.get(job_id)
+    except JobNotFound as exc:
+        raise HTTPException(status_code=404, detail=f"没有任务 {job_id}") from exc
+
+    path = _resolve_output_path(job)
+    return FileResponse(path, media_type="video/mp4", filename=path.name)
