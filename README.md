@@ -71,6 +71,7 @@ App 不直接连 ComfyUI。网关负责把表单翻译成 workflow、管显存�
 
 ```bash
 scripts/deploy_server.sh        # 服务器上 git pull + 装依赖 + 重启网关
+scripts/smoke_m1.sh             # 端到端冒烟：上传 → 生成 → 取回 → 断言产物
 ```
 
 ⚠️ **不要在服务器上改代码** —— 部署用 `git reset --hard origin/main`。
