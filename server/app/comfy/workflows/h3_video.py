@@ -27,6 +27,22 @@ from app.models.video_job import (
     VideoMode,
 )
 
+#: 网关自己生成 seed 时的上限，等于 2**53。
+#:
+#: ⚠️ **为什么不是 2**63（int64 的范围）**：JSON 的数字没有类型，
+#: 而很多客户端的 JSON 解析器把数字一律读成双精度浮点 ——
+#: 双精度只能精确表示到 2**53，再大就会被静默舍入。
+#:
+#: M1R7 实测：网关生成的 `3631950862913668918` 经 `jq` 解析后变成
+#: `3631950862913669000`，**差了 82**。JavaScript 的 `JSON.parse` 同理。
+#:
+#: seed 的全部用途就是复现，一个差 82 的 seed 什么都复现不了，**而且不会报错**。
+#: 2**53 ≈ 9.0e15 个取值远远够用，所以把生成范围压到这条安全线以内，
+#: 比要求每个客户端都用 64 位整数解析器更可靠。
+#:
+#: ⚠️ 用户**自己填**的 seed 不受这个上限约束 —— 那是他们的值，网关原样回显。
+MAX_SAFE_SEED = 2**53
+
 FPS = 24.0
 
 # 用户没给尺寸、也没有首帧图时的默认画布。M1 实测跑通过的尺寸。
@@ -254,7 +270,7 @@ def normalize(
         height=height,
         length_frames=length_frames,
         actual_duration_seconds=actual_duration,
-        seed=request.seed if request.seed is not None else random.randrange(2**63),
+        seed=request.seed if request.seed is not None else random.randrange(MAX_SAFE_SEED),
         sampler=profile["sampler"],
         steps=request.steps if request.steps is not None else profile["steps"],
         shift_video=profile["shift_video"],

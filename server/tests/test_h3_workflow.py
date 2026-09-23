@@ -382,3 +382,39 @@ def test_no_dimensions_and_no_source_falls_back_to_default():
     """纯 T2VA 既没有宽高也没有图片，用默认值。"""
     normalized = normalize(make_request(width=None, height=None))
     assert (normalized.width, normalized.height) == (736, 416)
+
+
+def test_a_generated_seed_survives_a_double_precision_json_parser():
+    """网关生成的 seed 必须能被「把数字当浮点」的 JSON 解析器精确还原。
+
+    ⚠️ **这条守的是一个不会报错的错误。**
+
+    JSON 的数字没有类型，很多客户端（JavaScript 的 `JSON.parse`、`jq`）
+    一律解析成双精度浮点，而双精度只能精确表示到 `2**53`。
+
+    M1R7 实测：seed `3631950862913668918` 经 jq 解析后变成
+    `3631950862913669000`，**差了 82**。
+    seed 的全部用途就是复现，差 82 就什么都复现不了 —— 而且任务照样成功。
+
+    这里不用「小于某个常数」来断言，而是**真的做一次浮点往返**：
+    常数写错时那种断言会跟着错，往返不会。
+    """
+    for _ in range(50):
+        request = VideoJobRequest(
+            mode=VideoMode.T2VA, prompt=PromptParts(description="x")
+        )
+        seed = normalize(request).seed
+        assert int(float(seed)) == seed, f"seed {seed} 经双精度往返后变成 {int(float(seed))}"
+
+
+def test_a_user_supplied_seed_is_echoed_back_untouched():
+    """用户自己填的 seed 原样回显，不做任何调整。
+
+    ⚠️ 上限只约束**网关生成**的 seed。用户给的是他们的值 ——
+    悄悄改掉它会让「按这个 seed 重跑」这件事直接失效。
+    """
+    huge = 9223372036854775807  # int64 上限
+    request = VideoJobRequest(
+        mode=VideoMode.T2VA, prompt=PromptParts(description="x"), seed=huge
+    )
+    assert normalize(request).seed == huge

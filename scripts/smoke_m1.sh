@@ -341,7 +341,10 @@ NORM_W=$(printf '%s' "$SUBMIT" | jget '.normalized.width')
 NORM_H=$(printf '%s' "$SUBMIT" | jget '.normalized.height')
 NORM_FRAMES=$(printf '%s' "$SUBMIT" | jget '.normalized.length_frames')
 NORM_DUR=$(printf '%s' "$SUBMIT" | jget '.normalized.actual_duration_seconds')
-NORM_SEED=$(printf '%s' "$SUBMIT" | jget '.normalized.seed')
+# ⚠️ seed 必须用 python 取，不能用 jq —— jq 把 JSON 数字当双精度浮点解析，
+# 而 seed 是大整数。M1R7 实测：jq 把 3631950862913668918 读成
+# 3631950862913669000，**差了 82**，而 seed 的全部用途就是复现。
+NORM_SEED=$(printf '%s' "$SUBMIT" | python3 -c 'import json,sys;print(json.load(sys.stdin)["normalized"]["seed"])')
 
 [[ $(printf '%s' "$SUBMIT" | jget '.state') == "queued" ]] || die 13 "提交后状态不是 queued"
 (( NORM_W % 32 == 0 && NORM_H % 32 == 0 )) || die 13 "画布 ${NORM_W}x${NORM_H} 不是 32 的倍数"
