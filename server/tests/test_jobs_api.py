@@ -221,3 +221,35 @@ def test_a_rejected_workflow_surfaces_the_node_errors_over_http():
     assert body["state"] == "failed"
     assert body["failure_reason"]["kind"] == "comfy_validation"
     assert body["failure_reason"]["detail"] == node_errors
+
+
+def test_a_non_empty_loras_field_is_refused_instead_of_silently_dropped():
+    """传 LoRA 要被明确拒绝，不能静默丢掉。
+
+    ⚠️ **这条守的是契约与实现之间的空档。**
+
+    契约里已经写了 `loras` 字段（M6 才实现），而 pydantic 默认会把没声明的
+    字段直接丢掉。实测过：不加这道守卫时，传一个非空的 `loras` 进来，
+    请求照样通过、任务照样成功、视频照样生成，**只是没有 LoRA 效果**，
+    而且哪里都不报错 —— 用户拿到的是一个「成功」的错结果。
+
+    与 seed 算两次、`completed` 当成「结束了」用是同一类问题：
+    **不报错的错误**。处置方式也一样，让它响亮地失败。
+    """
+    client, _ = make_client()
+    payload = {**T2VA_PAYLOAD, "loras": [{"name": "whatever.safetensors", "strength": 0.8}]}
+    with client:
+        response = client.post("/v1/jobs", json=payload)
+
+    assert response.status_code == 422
+    # 正向断言：错误信息里要说清楚为什么，不是一句干巴巴的「校验失败」。
+    assert "M6" in response.text
+
+
+def test_an_empty_loras_field_is_accepted():
+    """空数组要照常通过 —— App 传一个空列表是完全正常的。"""
+    client, _ = make_client()
+    with client:
+        response = client.post("/v1/jobs", json={**T2VA_PAYLOAD, "loras": []})
+
+    assert response.status_code == 200

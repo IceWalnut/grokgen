@@ -7,7 +7,7 @@
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # MiniMax H3 的采样参数分两套 profile，取自用户在用的 DaSiWa V23 模板里
 # "Settings & Post-Processing" 那段注释（`Docs/knowledge/` 下的 JSON）。
@@ -74,6 +74,7 @@ class VideoJobRequest(BaseModel):
         duration_seconds: 期望时长，秒。**会被换算成模型接受的帧数**，实际时长可能变长。
         turbo: 是否用 Turbo LoRA。决定采样 profile，见 `TURBO_PROFILE`。
         steps / seed: 留空时取 profile 默认值 / 随机。
+        loras: 要挂的 LoRA。**M6 才实现，现在非空会被拒绝**，理由见校验器。
     """
 
     model_config = ConfigDict(populate_by_name=True)
@@ -89,6 +90,41 @@ class VideoJobRequest(BaseModel):
     turbo: bool = True
     steps: int | None = None
     seed: int | None = None
+    loras: list = Field(default_factory=list)
+
+    @field_validator("loras")
+    @classmethod
+    def _reject_unimplemented_loras(cls, value: list) -> list:
+        """LoRA 自由挑选要到 M6 才实现，在那之前非空的 `loras` 必须被拒绝。
+
+        ⚠️ **为什么是拒绝，而不是忽略。**
+
+        契约（`Docs/contract/gateway_api_v0.1.md` §2）里已经写了这个字段，
+        而实现要等 M6 —— **契约和实现之间的这个空档，正是静默失败住的地方**。
+
+        pydantic 默认会把没声明的字段直接丢掉。实测过：传一个非空的 `loras`
+        进来，请求照样通过、任务照样成功、视频照样生成，**只是没有 LoRA 效果**，
+        而且哪里都不报错。用户看到的是一个「成功」的错结果。
+
+        这与本项目反复踩到的那一类问题是同一种（seed 算两次、`completed`
+        当成「结束了」用），处置方式也一样：**让它响亮地失败**。
+
+        Args:
+            value: 请求里的 `loras`。
+
+        Returns:
+            原值（只可能是空列表）。
+
+        Raises:
+            ValueError: 传了非空的 `loras`。FastAPI 会把它变成 422。
+        """
+        if value:
+            raise ValueError(
+                "LoRA 自由挑选要到 M6 才实现，现在只接受空数组或不传。"
+                "传了它不会生效 —— 与其静默忽略、让你拿到一个看起来成功的错结果，"
+                "不如在这里明确拒绝。"
+            )
+        return value
 
 
 class NormalizedParams(BaseModel):
