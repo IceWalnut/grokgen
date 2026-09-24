@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  这个 XML 主题只管 Activity 启动到 Compose 接手之间那一瞬间的窗口背景。
+  真正的配色在 Compose 里（ui/theme/），色值定义见需求文档 §7.1.2。
+
+  ⚠️ 背景色要和 Compose 那边的 background 对上，否则启动时会闪一下白。
+     App 只做深色主题（需求 §7.1.1），所以这里也只有深色一套。
+-->
+<resources>
+    <style name="Theme.Grokgen" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+        <item name="android:statusBarColor">@color/window_background</item>
+        <item name="android:navigationBarColor">@color/window_background</item>
+    </style>
+</resources>

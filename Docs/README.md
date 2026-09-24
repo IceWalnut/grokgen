@@ -19,9 +19,9 @@ grokgen/
 │   ├── architecture/      网关怎么分层、怎么拼 workflow
 │   └── implementation/    每个里程碑的执行文档
 │
-└── app/Docs/              ← 只有 Android 客户端关心（开发 App 时再建）
-    ├── architecture/
-    └── implementation/
+└── app/Docs/              ← 只有 Android 客户端关心
+    ├── architecture/      App 怎么分层、进度怎么取、视频怎么播
+    └── implementation/    每个里程碑的执行文档（M2 起）
 ```
 
 ## 判断一份新文档该放哪

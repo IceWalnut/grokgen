@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ⚠️ 这里只有一个值：启动窗口的背景色。
+
+  它必须和 Compose 那边 `ui/theme/Color.kt` 里的 background 是同一个值
+  （需求文档 §7.1.2 的 #0E0F11），否则 App 启动的那一瞬间会闪一下别的颜色。
+
+  ⚠️ 这是整个 App 里唯一一处颜色值的重复。之所以躲不掉：
+     XML 主题在 Compose 接手之前就要生效，那时读不到 Compose 的 token。
+     扫源码的那条约束（VS-41）只扫 .kt 文件，扫不到这里 ——
+     **所以改配色时要记得同时改这一处**。
+-->
+<resources>
+    <color name="window_background">#0E0F11</color>
+</resources>

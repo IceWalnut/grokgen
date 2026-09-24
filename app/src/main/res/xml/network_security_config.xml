@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  网关是 HTTP 不是 HTTPS —— 信任边界是整个 Tailscale 网络，不是 TLS（接口契约 §1）。
+  而 Android 从 API 28 起默认禁止明文 HTTP 流量。
+
+  ⚠️ 这里**只对后端那个域名放开明文**。
+     不要用 android:usesCleartextTraffic="true" —— 那等于放行 App 发往任何地址的
+     明文请求，而只有 tailnet 内那一个是可信的。
+
+  ⚠️ 这条同时管接口调用和将来的视频播放：Media3 的 HTTP 数据源走的是同一套策略。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">tail22a711.ts.net</domain>
+    </domain-config>
+</network-security-config>

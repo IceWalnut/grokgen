@@ -60,6 +60,7 @@ App 不直接连 ComfyUI。网关负责把表单翻译成 workflow、管显存�
 | 怎么连服务器、怎么起停服务 | `Docs/runbooks/home_gpu_server.md` |
 | 文档为什么这么分 | `Docs/README.md` |
 | 网关怎么分层、怎么拼 workflow | `server/Docs/architecture/` |
+| App 怎么分层、进度怎么取、视频怎么播 | `app/Docs/architecture/` |
 
 ## 开发与部署
 

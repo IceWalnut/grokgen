@@ -1,0 +1,55 @@
+[versions]
+# ⚠️ 下面每个版本号都是 2026-09-24 向对应仓库查过的，不是凭印象写的。
+#    查法：curl 各仓库的 maven-metadata.xml。
+#
+# ⚠️ **这些不是各自的最新版，是一组「与 AGP 8.13 / compileSdk 36 相容」的版本。**
+#
+# 第一次构建时用最新版失败了，报错很具体：
+#   androidx.compose.ui:ui-android:1.12.1 要 compileSdk 37 且要 AGP 9.1.0+
+#   androidx.lifecycle:lifecycle-viewmodel-compose-android:2.11.0 要 AGP 9.1.0+
+#
+# 往上走要同时升 AGP 9.x、Gradle 9.x、下载 android-37 平台，还要吃 AGP 大版本的
+# 破坏性变更。M2R1 要回答的是「手机能不能连上网关」，不是「用不用得上最新工具链」，
+# 所以这一轮退回一组相容的版本，把工具链升级留成一件单独的事。
+#
+# compose-bom 2026.06.01 对应 compose.ui **1.11.4**（查 bom 的 pom 确认过），
+# 1.12.x 才开始要求 compileSdk 37。
+agp = "8.13.2"
+kotlin = "2.4.20"
+composeBom = "2026.06.01"
+activityCompose = "1.11.0"
+lifecycle = "2.9.4"
+datastore = "1.1.7"
+# ⚠️ Retrofit 3.0.0 的 pom 声明的是 okhttp 4.12.0。
+#    不要显式引 okhttp 5.x —— 那会造成主版本不一致。
+#    需要日志拦截器时用同一个 4.12.0。
+retrofit = "3.0.0"
+okhttp = "4.12.0"
+serializationJson = "1.11.0"
+junit = "4.13.2"
+
+[libraries]
+compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
+compose-ui = { group = "androidx.compose.ui", name = "ui" }
+compose-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
+compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
+compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+
+androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
+androidx-lifecycle-viewmodel-compose = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-compose", version.ref = "lifecycle" }
+androidx-lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "lifecycle" }
+androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
+
+retrofit = { group = "com.squareup.retrofit2", name = "retrofit", version.ref = "retrofit" }
+retrofit-converter-kotlinx-serialization = { group = "com.squareup.retrofit2", name = "converter-kotlinx-serialization", version.ref = "retrofit" }
+okhttp-logging-interceptor = { group = "com.squareup.okhttp3", name = "logging-interceptor", version.ref = "okhttp" }
+kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "serializationJson" }
+
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
