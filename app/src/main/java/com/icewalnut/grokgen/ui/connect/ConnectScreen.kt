@@ -35,6 +35,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.icewalnut.grokgen.net.ConnectionOutcome
 import com.icewalnut.grokgen.net.dto.HealthDto
+import com.icewalnut.grokgen.ui.component.adviceFor
 import com.icewalnut.grokgen.ui.theme.GrokgenTheme
 
 /**
@@ -48,6 +49,7 @@ fun ConnectScreen(
     state: ConnectUiState,
     onInputChange: (String) -> Unit,
     onConnect: () -> Unit,
+    onOpenUpload: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val spacing = GrokgenTheme.spacing
@@ -150,6 +152,31 @@ fun ConnectScreen(
             OutcomeCard(state.outcome)
         }
 
+        // ⚠️ 只有网关**和 ComfyUI 都在线**时才让进上传页。
+        //    上传是经 ComfyUI 落盘的 —— ComfyUI 挂着时传必然 502，
+        //    **提前拦住比让用户白传十几 MB 强**。
+        if (state.outcome is ConnectionOutcome.Healthy) {
+            Spacer(Modifier.height(spacing.lg))
+            Button(
+                onClick = onOpenUpload,
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = colors.surface,
+                    contentColor = colors.onBackground,
+                ),
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+            ) {
+                Text("选一张图上传 →", style = MaterialTheme.typography.titleMedium)
+            }
+        } else if (state.outcome is ConnectionOutcome.ComfyDown) {
+            Spacer(Modifier.height(spacing.lg))
+            Text(
+                text = "ComfyUI 没起来，现在传图会失败 —— 图是经它落盘的。",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.onSurfaceVariant,
+            )
+        }
+
         Spacer(Modifier.height(spacing.xxl))
     }
 }
@@ -160,59 +187,10 @@ private fun OutcomeCard(outcome: ConnectionOutcome) {
     val colors = MaterialTheme.colorScheme
     val status = GrokgenTheme.status
 
-    // ⚠️ 每种结果都有**自己的一句处置建议** —— 需求 F1 的要求不是「显示不同的错误」，
-    //    是让用户知道该去做什么。
-    val (dotColor, title, detail) = when (outcome) {
-        is ConnectionOutcome.Healthy ->
-            Triple(status.done, "网关在线", null)
-
-        is ConnectionOutcome.ComfyDown ->
-            Triple(
-                status.failed,
-                "网关在线，但 ComfyUI 没起来",
-                outcome.reason ?: "网关没有给出原因。去服务器上看看 ComfyUI 的进程还在不在。",
-            )
-
-        ConnectionOutcome.TailscaleDown ->
-            Triple(
-                status.failed,
-                "手机没连上 Tailscale",
-                "解析不出这个地址。打开 Tailscale App 确认已经登录并连上，再试一次。",
-            )
-
-        // ⚠️ 文案必须把三种可能都说出来，**不能挑一个说**。
-        //    M2R1 实测：网关进程杀掉、wsl --shutdown，两种情况在这里完全分不开 ——
-        //    挑一个说等于把用户指向错误的方向。
-        ConnectionOutcome.NoAnswer ->
-            Triple(
-                status.failed,
-                "服务器没有应答",
-                "地址解析得出来，但连不上，有三种可能：机器关机了、" +
-                    "WSL 发行版被系统回收了、或者网关进程没起来。" +
-                    "这三种在手机这边分不开 —— 到那台机器上看一眼最快。",
-            )
-
-        ConnectionOutcome.ConnectionRefused ->
-            Triple(
-                status.failed,
-                "服务器在线，但网关没启动",
-                "端口上没人监听。到服务器上把网关进程起起来。",
-            )
-
-        is ConnectionOutcome.HttpError ->
-            Triple(
-                status.failed,
-                "网关回了 HTTP ${outcome.code}",
-                outcome.body ?: "没有响应体。",
-            )
-
-        is ConnectionOutcome.Unexpected ->
-            Triple(
-                status.failed,
-                "没见过的失败",
-                outcome.throwable.toString(),
-            )
-    }
+    // ⭐ 文案抽到了 ui/component/ConnectionAdvice.kt，**和上传页共用同一份** ——
+    //    「手机没连上 Tailscale」在两个页面是同一件事，说法就该一样。
+    val advice = adviceFor(outcome)
+    val dotColor = if (outcome is ConnectionOutcome.Healthy) status.done else status.failed
 
     Column(
         modifier = Modifier
@@ -232,16 +210,16 @@ private fun OutcomeCard(outcome: ConnectionOutcome) {
             )
             Spacer(Modifier.size(spacing.sm))
             Text(
-                text = title,
+                text = advice.title,
                 style = MaterialTheme.typography.titleMedium,
                 color = colors.onBackground,
             )
         }
 
-        if (detail != null) {
+        if (advice.detail != null) {
             Spacer(Modifier.height(spacing.md))
             Text(
-                text = detail,
+                text = advice.detail,
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.onSurfaceVariant,
             )

@@ -2,6 +2,7 @@ package com.icewalnut.grokgen
 
 import android.content.Context
 import com.icewalnut.grokgen.data.SettingsStore
+import com.icewalnut.grokgen.data.UploadRepository
 import com.icewalnut.grokgen.net.GatewayApi
 import com.icewalnut.grokgen.net.GatewayClient
 
@@ -28,4 +29,15 @@ class AppContainer(context: Context) {
      * 会让「改了地址但没生效」变成一个很难查的问题 —— 而造一个 Retrofit 实例很便宜。
      */
     fun gatewayApi(baseUrl: String): GatewayApi = GatewayClient.create(baseUrl)
+
+    /**
+     * 上传用的仓库。
+     *
+     * ⚠️ 它拿到的是 [GatewayClient.createForUpload] 而不是 [gatewayApi] ——
+     * 那个客户端的写超时是 60 秒。用健康检查那个（写超时 10 秒）的话，
+     * 一条 12 MB 的上传在链路抖动时会超时，
+     * **而用户看到的会是「服务器没有应答」—— 一个错误的诊断**。
+     */
+    val uploadRepository: UploadRepository =
+        UploadRepository(appContext) { baseUrl -> GatewayClient.createForUpload(baseUrl) }
 }

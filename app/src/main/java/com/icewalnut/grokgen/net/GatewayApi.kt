@@ -1,8 +1,13 @@
 package com.icewalnut.grokgen.net
 
 import com.icewalnut.grokgen.net.dto.HealthDto
+import com.icewalnut.grokgen.net.dto.UploadedImageDto
+import okhttp3.MultipartBody
 import retrofit2.Response
 import retrofit2.http.GET
+import retrofit2.http.Multipart
+import retrofit2.http.POST
+import retrofit2.http.Part
 
 /**
  * 网关的 HTTP 接口，一比一对应 `Docs/contract/gateway_api_v0.1.md`。
@@ -22,4 +27,18 @@ interface GatewayApi {
      */
     @GET("v1/health")
     suspend fun health(): Response<HealthDto>
+
+    /**
+     * 上传一张图，拿回一个 `asset_id`。
+     *
+     * ⚠️ multipart 的字段名**必须是 `file`** —— 网关那边是
+     * `async def upload_image(request: Request, file: UploadFile)`，
+     * FastAPI 从参数名推出字段名。名字不对是 422。
+     *
+     * ⚠️ 只有 filename 的**后缀**有意义：网关自己生成落盘文件名，
+     * 且**完全不嗅探内容**，后缀是它唯一的闸门。
+     */
+    @Multipart
+    @POST("v1/uploads/image")
+    suspend fun uploadImage(@Part file: MultipartBody.Part): Response<UploadedImageDto>
 }
