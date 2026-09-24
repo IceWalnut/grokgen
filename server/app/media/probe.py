@@ -124,11 +124,38 @@ class FfprobeImageProbe:
         try:
             streams = json.loads(stdout).get("streams", [])
             stream = streams[0]
-            return ImageSize(width=int(stream["width"]), height=int(stream["height"]))
+            width, height = int(stream["width"]), int(stream["height"])
         except (ValueError, IndexError, KeyError, TypeError) as exc:
             raise MediaProbeError(
                 f"{FFPROBE} 没有给出 {path.name} 的宽高，它可能不是图片"
             ) from exc
+
+        # ⚠️ 上面那个 except 挡的是「宽高**缺失**」，挡不住「宽高是 **0**」。
+        #
+        # 因为 ffprobe 对一个坏文件**退出码是 0**：它把错误写进 stderr，
+        # 而 streams 里照样给出 `{"width": 0, "height": 0}`。实测（2026-09-24）：
+        #
+        #     $ ffprobe -v error -select_streams v:0 \
+        #           -show_entries stream=width,height -of json <内容是文本的 .png>
+        #     {"streams":[{"width":0,"height":0}]}
+        #     [png @ ...] Invalid PNG signature 0x7468697320697320.
+        #     exit=0
+        #
+        # 于是上传接口会返回 **200 加一个 0x0 的 asset** —— 看起来完全正常。
+        # 真正的失败被推迟到提交生成任务那一刻，而且归错了因：
+        # 按图片比例推画布的那一行是 `math.sqrt(budget / (width * height))`，
+        # **除以零**，报出来是一个未处理的异常，不是「这不是一张图片」。
+        #
+        # ⚠️ **不要改成「stderr 非空就算失败」** —— ffprobe 对正常文件也会往
+        # stderr 写警告，那样会把好图片误判成坏的。
+        # **判据落在尺寸这个结果上，不落在噪声上。**
+        if width <= 0 or height <= 0:
+            raise MediaProbeError(
+                f"{FFPROBE} 给 {path.name} 报的尺寸是 {width}x{height}，"
+                "它不是一张有效图片"
+            )
+
+        return ImageSize(width=width, height=height)
 
 
 class FakeImageProbe:
