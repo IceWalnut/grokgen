@@ -337,8 +337,13 @@ async def test_queue_keeps_the_client_timeout():
     assert _timeout_of(seen)["connect"] == settings.comfy_timeout_seconds
 
 
-async def test_explicit_long_timeout_still_wins():
-    """显式给了长超时的调用方（拉 object_info、查 history）不受影响。"""
+async def test_slow_endpoints_get_a_long_read_timeout():
+    """慢接口（拉 object_info、查 history、提交、上传）要能读久一点。
+
+    ⚠️ **这条测试原本断言的是「连接超时也跟着放宽」，那个前提被 M2R2 实测推翻了。**
+    见下面 `test_slow_endpoints_keep_a_short_connect_timeout`：
+    连接超时跟着放宽会导致一次误诊。现在只断言**读**超时被放宽。
+    """
     seen: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -348,7 +353,40 @@ async def test_explicit_long_timeout_still_wins():
     client = client_keeping_timeout(handler)
     await client.object_info()
 
-    connect = _timeout_of(seen)["connect"]
-    assert connect > settings.comfy_timeout_seconds, (
-        f"object_info 应当用长超时，实际是 {connect}"
+    read = _timeout_of(seen)["read"]
+    assert read > settings.comfy_timeout_seconds, (
+        f"object_info 的读超时应当放宽，实际是 {read}"
+    )
+
+
+async def test_slow_endpoints_keep_a_short_connect_timeout():
+    """⭐ 慢接口只放宽**读**超时，**连接**超时必须仍然很短。
+
+    ⚠️ M2R2 真机实测踩到的：`timeout=LONG_TIMEOUT_SECONDS` 在 httpx 里是一个标量，
+    会**同时**设成连接、读、写、池四个超时。而 ComfyUI 就在本机 ——
+    连本机端口从来不该要 60 秒。
+
+    后果是一次**误诊**：ComfyUI 停掉时上传一张图，网关要等满 60 秒才返回 502，
+    而 App 的读超时也是 60 秒，于是客户端先一步超时 ——
+    用户看到「服务器没有应答」，而实际上网关好好的、挂掉的是 ComfyUI。
+
+    ⚠️ 这个坑在别的机器上未必出现（连关闭端口正常会秒拒），
+    是这台服务器的 WSL 镜像网络**丢包而不是拒绝**才让它暴露出来。
+    """
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["timeout"] = request.extensions.get("timeout")
+        return httpx.Response(200, json={})
+
+    client = client_keeping_timeout(handler)
+    await client.object_info()
+
+    timeout = _timeout_of(seen)
+    assert timeout["connect"] == settings.comfy_timeout_seconds, (
+        f"连接超时应当是 {settings.comfy_timeout_seconds} 秒，实际 {timeout['connect']} —— "
+        "连本机端口不该等那么久"
+    )
+    assert timeout["read"] > settings.comfy_timeout_seconds, (
+        f"读超时应当放宽，实际 {timeout['read']}"
     )

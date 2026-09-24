@@ -20,6 +20,31 @@ from app.core.config import settings
 LONG_TIMEOUT_SECONDS = 60.0
 
 
+def _long_timeout() -> httpx.Timeout:
+    """给慢接口用的超时：**读可以久，连接不许久**。
+
+    ⚠️ **不要直接传 `timeout=LONG_TIMEOUT_SECONDS`** —— httpx 里一个标量会
+    **同时**设成连接、读、写、连接池四个超时。而 ComfyUI 就在本机：
+    连本机端口从来不该要 60 秒。
+
+    M2R2 真机实测踩到的后果：ComfyUI 停掉时上传一张图，网关要**等满 60 秒**
+    才放弃并返回 502。而 App 的读超时也是 60 秒，于是**客户端总是先一步超时** ——
+    用户看到的是「服务器没有应答」，而实际上网关好好的、挂掉的是 ComfyUI。
+    **一次误诊，把人指向错误的排查方向。**
+
+    ⚠️ 这个坑在别的机器上未必出现：连关闭端口正常会立刻收到 ECONNREFUSED。
+    但这台服务器的 WSL 用镜像网络，**关闭端口上的连接是被丢弃而不是被拒绝**，
+    所以「连接超时」这一项才真的会跑满。
+
+    Returns:
+        连接用 `comfy_timeout_seconds`（2 秒），读/写/池用 60 秒。
+    """
+    return httpx.Timeout(
+        LONG_TIMEOUT_SECONDS,
+        connect=settings.comfy_timeout_seconds,
+    )
+
+
 class HttpComfyClient:
     """走 HTTP 的 ComfyUI 客户端。
 
@@ -33,7 +58,8 @@ class HttpComfyClient:
             base_url: ComfyUI 的地址。默认取配置里的 `comfy_base_url`。
             timeout: 单次请求超时，秒。默认取配置里的 `comfy_timeout_seconds`（2 秒）。
                 这个值偏小是故意的：health 检查不该把请求挂住。
-                拉节点定义、提交任务这些慢接口各自覆盖成 `LONG_TIMEOUT_SECONDS`。
+                拉节点定义、提交任务这些慢接口各自覆盖成 `_long_timeout()` ——
+                **那个只放宽读超时，连接超时仍然是这里的值**，见该函数的说明。
         """
         self._client = httpx.AsyncClient(
             base_url=base_url or settings.comfy_base_url,
@@ -124,7 +150,7 @@ class HttpComfyClient:
         Raises:
             ComfyUnreachable: 请求失败或超时。
         """
-        return await self._get_json("/object_info", timeout=LONG_TIMEOUT_SECONDS)
+        return await self._get_json("/object_info", timeout=_long_timeout())
 
     async def submit(self, workflow: dict, client_id: str) -> str:
         """把一张 workflow 提交给 ComfyUI。
@@ -153,7 +179,7 @@ class HttpComfyClient:
         payload = {"prompt": workflow, "client_id": client_id}
         try:
             response = await self._client.post(
-                "/prompt", json=payload, timeout=LONG_TIMEOUT_SECONDS
+                "/prompt", json=payload, timeout=_long_timeout()
             )
         except httpx.HTTPError as exc:
             raise ComfyUnreachable(f"提交失败: {exc!r}") from exc
@@ -201,7 +227,7 @@ class HttpComfyClient:
         form = {"type": "input", "subfolder": subfolder}
         try:
             response = await self._client.post(
-                "/upload/image", files=files, data=form, timeout=LONG_TIMEOUT_SECONDS
+                "/upload/image", files=files, data=form, timeout=_long_timeout()
             )
             response.raise_for_status()
         except httpx.HTTPError as exc:
@@ -325,7 +351,7 @@ class HttpComfyClient:
         Raises:
             ComfyUnreachable: 请求失败。
         """
-        body = await self._get_json(f"/history/{prompt_id}", timeout=LONG_TIMEOUT_SECONDS)
+        body = await self._get_json(f"/history/{prompt_id}", timeout=_long_timeout())
         record = body.get(prompt_id)
         if record is None:
             return None
