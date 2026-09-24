@@ -57,7 +57,7 @@ class HttpComfyClient:
 
         Args:
             path: 相对路径，例如 `/system_stats`。
-            timeout: 覆盖默认超时，秒。
+            timeout: 覆盖默认超时，秒。**不给就用客户端那 2 秒**，见下。
 
         Returns:
             解析后的 JSON。
@@ -65,8 +65,26 @@ class HttpComfyClient:
         Raises:
             ComfyUnreachable: 请求失败、超时或返回非 2xx。
         """
+        # ⚠️ **httpx 里请求级的 `timeout=None` 意思是「不设超时」，
+        #    不是「用客户端默认值」** —— 它会把构造器里那 2 秒显式覆盖掉。
+        #    表示「用默认」要用 `httpx.USE_CLIENT_DEFAULT` 这个哨兵值。
+        #
+        # 这个坑以前一直看不出来：ComfyUI 没跑时连本机的关闭端口，
+        # 正常会立刻收到 ECONNREFUSED，所以有没有超时都一样快。
+        # 但这台服务器的 WSL 用的是镜像网络，**关闭端口上的连接是被丢弃而不是被拒绝**，
+        # 于是「没有超时」变成了真的永远等下去。
+        #
+        # 实测（2026-09-24，ComfyUI 已停时打 127.0.0.1:8188）：
+        #   timeout=None        跑满 12 秒仍未返回
+        #   不传 timeout        2.00 秒后抛 ConnectTimeout
+        #   USE_CLIENT_DEFAULT  2.00 秒后抛 ConnectTimeout
+        #
+        # 后果有两处，都很严重：
+        #   `/v1/health` 在 ComfyUI 挂掉时永远不返回 —— 而那正是它存在的意义；
+        #   `queue()` 在任务轮询循环里，ComfyUI 中途挂掉会让网关永远轮询下去。
+        effective_timeout = httpx.USE_CLIENT_DEFAULT if timeout is None else timeout
         try:
-            response = await self._client.get(path, timeout=timeout)
+            response = await self._client.get(path, timeout=effective_timeout)
             response.raise_for_status()
         except httpx.HTTPError as exc:
             raise ComfyUnreachable(f"{settings.comfy_base_url}{path} 不可达: {exc!r}") from exc

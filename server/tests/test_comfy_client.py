@@ -16,6 +16,7 @@ import pytest
 
 from app.comfy.client import ComfyUnreachable, ComfyValidationError
 from app.comfy.http_client import HttpComfyClient
+from app.core.config import settings
 
 SYSTEM_STATS = {
     "devices": [
@@ -258,3 +259,96 @@ async def test_control_endpoint_failures_become_unreachable():
 
     with pytest.raises(ComfyUnreachable):
         await client.interrupt()
+
+
+# ---------------------------------------------------------------------------
+# 超时必须真的生效（M2R1 实测发现的 bug）
+# ---------------------------------------------------------------------------
+
+
+def client_keeping_timeout(handler) -> HttpComfyClient:
+    """和 `client_with` 一样换 transport，**但保留真实的超时设置**。
+
+    `client_with` 造的客户端没设 timeout，所以用它测不出超时被覆盖的问题。
+    """
+    client = HttpComfyClient(base_url="http://test")
+    client._client = httpx.AsyncClient(
+        base_url="http://test",
+        timeout=settings.comfy_timeout_seconds,
+        transport=httpx.MockTransport(handler),
+    )
+    return client
+
+
+def _timeout_of(seen: dict) -> dict:
+    assert "timeout" in seen, "没有抓到请求"
+    assert seen["timeout"] is not None, (
+        "请求带的超时是 None —— httpx 里那表示**不设超时**，"
+        "不是「用客户端默认值」。ComfyUI 挂掉时这会让请求永远等下去。"
+    )
+    return seen["timeout"]
+
+
+async def test_system_stats_keeps_the_client_timeout():
+    """`/v1/health` 那条路上的 GET 必须带着客户端那 2 秒超时出去。
+
+    ⚠️ **这条测试是 M2R1 在真机验证时踩出来的，不是设计出来的。**
+    当时停掉 ComfyUI、网关留着，期望 health 在 2 秒内返回
+    `comfy.reachable = false`；实际是**永远不返回**。
+
+    根因：`_get_json` 把调用方的 `timeout=None` 原样传给 httpx，
+    而 httpx 里请求级的 `None` 意思是「不设超时」，会覆盖掉构造器里那 2 秒。
+
+    ⚠️ **为什么以前一直没暴露**：连本机的关闭端口正常会立刻收到 ECONNREFUSED，
+    有没有超时都一样快。但服务器的 WSL 用镜像网络，
+    **关闭端口上的连接是被丢弃而不是被拒绝**，于是「没有超时」变成真的永远等。
+
+    ⚠️ **为什么离线测试没抓到**：`FakeComfyClient` 是立刻抛异常的，
+    替身根本走不到超时那条路 —— 和 M1R7 那个 `completed` 是同一类问题。
+    """
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["timeout"] = request.extensions.get("timeout")
+        return httpx.Response(200, json=SYSTEM_STATS)
+
+    client = client_keeping_timeout(handler)
+    await client.system_stats()
+
+    assert _timeout_of(seen)["connect"] == settings.comfy_timeout_seconds
+
+
+async def test_queue_keeps_the_client_timeout():
+    """`queue()` 同样不许丢超时 —— 它比 health 那条更危险。
+
+    它跑在任务轮询循环里：ComfyUI 中途挂掉而这个请求没有超时的话，
+    **网关会永远轮询下去**，任务永远等不到终态。
+    这正是 M1R7 修过的那种「无限轮询」，只是换了一条进去的路。
+    """
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["timeout"] = request.extensions.get("timeout")
+        return httpx.Response(200, json={"queue_running": [], "queue_pending": []})
+
+    client = client_keeping_timeout(handler)
+    await client.queue()
+
+    assert _timeout_of(seen)["connect"] == settings.comfy_timeout_seconds
+
+
+async def test_explicit_long_timeout_still_wins():
+    """显式给了长超时的调用方（拉 object_info、查 history）不受影响。"""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["timeout"] = request.extensions.get("timeout")
+        return httpx.Response(200, json={})
+
+    client = client_keeping_timeout(handler)
+    await client.object_info()
+
+    connect = _timeout_of(seen)["connect"]
+    assert connect > settings.comfy_timeout_seconds, (
+        f"object_info 应当用长超时，实际是 {connect}"
+    )
