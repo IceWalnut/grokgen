@@ -671,7 +671,12 @@ class JobManager:
             无。
         """
         if job.cancel_requested:
-            await self._set_state(job, JobState.CANCELLED)
+            # 排队中被取消的任务，`cancel()` 那边已经直接落了 `cancelled`（队列里只剩个壳），
+            # 这里只需跳过。⚠️ 不能无条件再 `_set_state(CANCELLED)` 一次 ——
+            # `cancelled → cancelled` 不是合法转移，会抛异常、让 worker 在日志里刷一段
+            # 「未预期的异常」（2026-09-28 M2R4 真机上撞到）。
+            if not job.is_terminal:
+                await self._set_state(job, JobState.CANCELLED)
             return
 
         await self._set_state(job, JobState.PREPARING)

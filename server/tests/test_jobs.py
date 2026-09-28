@@ -13,6 +13,7 @@
 `wait_for` 的 timeout 是兜底：超了说明真卡住了，不是抖动。
 """
 
+import logging
 from datetime import datetime, timezone
 
 import pytest
@@ -251,6 +252,42 @@ async def test_cancelling_a_queued_job_never_touches_comfyui():
 
     comfy.complete(first.prompt_id)
     await manager.wait_for(first.job_id, {JobState.DONE})
+    await manager.aclose()
+
+
+async def test_the_worker_skips_a_job_cancelled_while_queued_without_error(caplog):
+    """排队中取消的任务，worker 取到它时要**安静地跳过**，不能再落一次终态。
+
+    2026-09-28 M2R4 真机上撞到：`cancel()` 对排队中的任务直接落 `cancelled`，
+    而 `_run_one` 取到它时又 `_set_state(CANCELLED)` 一次 ——
+    `cancelled → cancelled` 不是合法转移，抛 `InvalidTransition`，
+    worker 兜住后在日志里写一整段「未预期的异常」。功能上没坏（任务本来就是终态），
+    但每取消一次排队任务就刷一段 traceback，真正的错误会淹没在里面。
+
+    ⚠️ 上面那条 `test_cancelling_a_queued_job_never_touches_comfyui` 没抓到它：
+    那条测试等第一个任务完成就关掉管理器，worker **根本没走到**第二个任务；
+    而且即便走到了，异常被 worker 兜住只写日志，那条测试也不看日志。
+    这里提交第三个任务来**逼 worker 越过**被取消的那个，再断言日志里没有异常。
+    """
+    manager, comfy = await make_manager()
+
+    first = submit(manager)
+    second = submit(manager)
+    await manager.wait_for(first.job_id, {JobState.SUBMITTED})
+    await manager.cancel(second.job_id)
+    # 第三个排在被取消的那个后面：它能跑起来，说明 worker 已经处理过第二个。
+    third = submit(manager)
+
+    with caplog.at_level(logging.ERROR, logger="app.core.jobs"):
+        comfy.complete(first.prompt_id)
+        await manager.wait_for(first.job_id, {JobState.DONE})
+        await manager.wait_for(third.job_id, {JobState.SUBMITTED})
+        comfy.complete(third.prompt_id)
+        await manager.wait_for(third.job_id, {JobState.DONE})
+
+    assert second.state is JobState.CANCELLED
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert errors == [], f"worker 处理被取消的排队任务时报了错：{[r.getMessage() for r in errors]}"
     await manager.aclose()
 
 
