@@ -89,6 +89,7 @@ VS 编号的定义见 `Docs/Validation.md` §3。
 | M2R2 | 相册里的图能不能变成一个 `asset_id` | 真机选图上传成功，拿到 `asset_id` 与尺寸 | VS-33 |
 | M2R3 | 提交的请求体跟契约对不对得上 | 提交成功，`normalized` 与 `notices` 显示在界面上 | VS-34, VS-35 |
 | M2R4 | 状态能不能一路看到终态，能不能取消 | 轮询到 `done`；三种取消结果符合契约 | VS-36, VS-37, VS-38 |
+| M2R4b | （**网关侧**）`stage` / `progress` 有没有真实数据 | 真机上看到「正在加载模型」→「采样中 N%」；ws 断开时任务照常完成。执行文档在 `server/Docs/implementation/M2R4b_comfy_ws_progress.md` | VS-23〜28 |
 | M2R5 | **手机上到底播不播得动** | 真机播放且能拖进度条；一次完整 I2VA 全程不碰电脑 | VS-39, VS-40 |
 
 **验证层级**（`Docs/Validation.md` §2）在 App 这一侧的落法：
@@ -363,10 +364,10 @@ JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ./gradlew build
 
 只跑某个测试类用 `testDebugUnitTest --tests '*类名*'` —— 聚合任务 `test` 不认 `--tests`。
 
-### 4.5 `stage` 与 `progress` 现在恒为空，不是 bug
+### 4.5 `stage` 与 `progress` 为空不是 bug
 
 契约 §2 写明了。**App 不许把它们为空当成异常。**
-它们要等网关连上 ComfyUI 的 ws 才有值（架构文档 §1.1）。
+M2R4b 起网关连上了 ComfyUI 的 ws，它们有真实数据；但 ws 断开、刚开始、或认不出节点时仍为空。
 
 ### 4.6 不许假设任务一定会经过 `running`
 

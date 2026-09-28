@@ -417,9 +417,11 @@ queued ──> preparing ──> submitted ──> running ──> postprocessin
 M1 没有 ws，靠轮询观察状态，一个短任务完全可能在两次轮询之间跑完 ——
 不允许这条边，正常路径上就会抛非法转移。
 
-⚠️ **M1 阶段 `running` 的 `stage` 与 `progress` 恒为空。**
-`GET /queue` 只能回答「它是不是正在跑」，回答不了「跑到哪一段了」。
-细分要等 ws（需求 F2 要求区分 `loading_model`，因为它是分钟级的）。
+✅ **M2R4b 起 `stage` 与 `progress` 有真实数据**：网关常驻一条到 ComfyUI 的 WebSocket，
+事件到 `stage` 的映射在 `app/core/progress.py`，依据与规则见
+`server/Docs/implementation/M2R4b_comfy_ws_progress.md` §5（照着三份真实录制定的）。
+⚠️ **ws 只是进度来源，不是状态来源**：状态转移仍然只看 `/queue` + `/history` 轮询，
+ws 断开的后果只是这两个字段变回空。
 
 `running` 的 `stage` 要能区分这几段，因为耗时量级差得很远：
 

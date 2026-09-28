@@ -1,6 +1,6 @@
 # 网关 API 契约 v0.1
 
-**状态**：2026-09-28 · §2 的任务部分已按实际实现回填（M2R4 加了 `mode`/`prompt` 回显，更正了取消与列表的几处）；其余仍是草案
+**状态**：2026-09-28 · §2 的任务部分已按实际实现回填（M2R4 加了 `mode`/`prompt` 回显，更正了取消与列表的几处；M2R4b 起 `stage`/`progress` 有真实数据）；其余仍是草案
 
 ⚠️ **哪些是已验证的、哪些还是草案，要分清**：
 
@@ -214,22 +214,27 @@ ComfyUI 自己的节点定义只给一个平铺的文件名列表，**不区分�
 `state`：`queued` / `preparing` / `submitted` / `running` / `postprocessing` /
 `done` / `failed` / `cancelled`
 
-`stage`（仅 `running` 时有意义）：`loading_model` / `sampling` /
+`stage`（只在任务占着 GPU 时有值，即 `submitted` / `running`）：`loading_model` / `sampling` /
 `decoding_video` / `decoding_audio` / `encoding`
 
-⚠️ **`loading_model` 必须单独显示。** 它是分钟级的固定开销，跟这次生成多少内容无关。
+⚠️ **`loading_model` 必须单独显示。** 它是一段与这次生成多少内容无关的固定开销
+（实测：模型不在显存时约 35 秒、在显存时约 10 秒，M2R4b，各 1 次，5 秒 Turbo 文生视频）。
 App 上把它和 `sampling` 混成一个「生成中」，用户会以为卡死了。
+⚠️ 它**包含第一步采样**：ComfyUI 的步数事件在每一步**结束**时才发，第一步之前的加载与第一步本身
+从事件上分不开（M2R4b 执行文档 §5.2）。
 
-`progress` 只在 `sampling` 阶段有百分比，其余阶段为 `null`。
+`progress` 是采样进度 0..1（第 N 步结束时为 N / 总步数；Turbo 8 步，约每 5.5 秒跳一次），
+只在 `sampling` 阶段有值，其余阶段为 `null`。
 
-⚠️ **M1 阶段 `stage` 与 `progress` 恒为 `null`。** 它们的数据来自 ComfyUI 的
-WebSocket 事件，而 M1 只做轮询（执行文档 §1）。网关靠 ComfyUI 的队列接口只能
-区分到 `submitted`（已提交、还没轮到）与 `running`（正在跑），再细分不出来。
-**App 不要把 `stage` 为空当成异常。**
+✅ **M2R4b（2026-09-28）起两个字段有真实数据**：网关常驻一条到 ComfyUI 的 WebSocket，
+把节点执行与步数事件翻译成这两个字段。映射规则见 `server/Docs/implementation/M2R4b_comfy_ws_progress.md` §5。
 
-⚠️ **它要等的是「网关去连 ComfyUI 的 ws」，不是「§6 的事件流」** ——
-这两件事常被混成一件。§6 是网关**向 App** 推送，M2 明确不做（§6.1）；
-而 `stage` 有没有值取决于网关**向 ComfyUI** 取不取实时事件，与 App 怎么拿无关。
+⚠️ **`stage` 为 `null` 仍是正常状态，App 不要当成异常**。三种情况会出现：
+刚开始、第一个节点还没开始执行（通常不到 1 秒）；网关与 ComfyUI 的 ws 断开、或刚重连还没等到下一条步数事件；
+执行到一个网关认不出的节点。**任务本身照常推进**，状态以 `state` 为准。
+
+⚠️ 这条 ws 是**网关向 ComfyUI** 取实时事件，与 §6（网关**向 App** 推送，M2 明确不做）是两件事。
+App 仍然轮询本接口。
 
 完成后 `outputs`：
 
@@ -472,6 +477,7 @@ SSE 单向、走普通 HTTP、FastAPI 原生支持；而 ws 的双向能力这�
 问最终结果）**都回答不了「现在跑到第几步」**。
 上游那段砍掉的话，`stage` 会永远是 `null`，而需求 F2 点名要求单独显示
 `loading_model`。**这两段链路要分开决定。**
+✅ 上游那段 M2R4b 已实现（§2）；下游这段仍是 App 轮询。
 
 ---
 

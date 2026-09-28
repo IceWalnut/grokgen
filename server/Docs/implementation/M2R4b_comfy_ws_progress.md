@@ -1,6 +1,6 @@
 # M2R4b 执行文档：网关接 ComfyUI 的 WebSocket，让进度有真实数据
 
-**状态**：🔄 进行中（2026-09-28 开工）
+**状态**：✅ 完成（2026-09-28）。VS-23〜28 全部达成，总结见 `Docs/experience/2026-09-28/M2R4b_comfy_ws_progress.md`
 **上游**：`server/Docs/architecture/gateway_architecture_v0.1.md`、契约 `Docs/contract/gateway_api_v0.1.md` §2
 **所属里程碑**：M2（Android 原型）。这是插在 M2R4 与 M2R5 之间的**网关侧**一轮。
 
