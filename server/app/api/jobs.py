@@ -27,7 +27,7 @@ from app.core.jobs import (
     ManagerClosing,
 )
 from app.media.probe import MediaProbeError
-from app.models.video_job import NormalizedParams, VideoJobRequest
+from app.models.video_job import NormalizedParams, PromptParts, VideoJobRequest
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,11 @@ class JobResponse(BaseModel):
         stage: `running` 时的细分阶段。**M1 恒为 `null`**，见下。
         progress: 采样进度。**M1 恒为 `null`**。
         created_at: 创建时刻，ISO 8601 带时区。
+        mode: 提交时的生成模式（`T2VA` / `I2VA` / `FL2VA`），原样回显。
+        prompt: 提交时的三段 prompt，**用户填的原文**。
+            ⚠️ 留空的环境声 / 背景音乐在这里是 `""`，不是送给模型时替换成的 `N/A` ——
+            那个替换发生在拼 workflow 时，不改请求本身。
+            队列页靠它区分任务：几个任务的参数完全可以一模一样（2026-09-28 加入）。
         normalized: 归一化后的真实参数。
         notices: 给用户看的中文提示，说明「你要的」和「你会得到的」差在哪。
         outputs: 产出的文件，未完成时是空列表。
@@ -98,6 +103,8 @@ class JobResponse(BaseModel):
     stage: str | None = None
     progress: float | None = None
     created_at: str
+    mode: str
+    prompt: PromptParts
     normalized: NormalizedParams
     notices: list[str]
     outputs: list[OutputResponse] = Field(default_factory=list)
@@ -156,6 +163,10 @@ def _to_response(job: Job) -> JobResponse:
         stage=job.stage,
         progress=job.progress,
         created_at=job.created_at.isoformat(),
+        # 直接取请求对象上的值：它从提交起就没被改过，
+        # N/A 替换只发生在 build_prompt 拼出的字符串里。
+        mode=job.request.mode.value,
+        prompt=job.request.prompt,
         normalized=job.normalized,
         notices=job.normalized.notices,
         outputs=[

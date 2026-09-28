@@ -1,6 +1,6 @@
 # 网关 API 契约 v0.1
 
-**状态**：2026-09-23 · §2 的任务部分已按 M1 的实际实现回填；其余仍是草案
+**状态**：2026-09-28 · §2 的任务部分已按实际实现回填（M2R4 加了 `mode`/`prompt` 回显，更正了取消与列表的几处）；其余仍是草案
 
 ⚠️ **哪些是已验证的、哪些还是草案，要分清**：
 
@@ -194,11 +194,22 @@ ComfyUI 自己的节点定义只给一个平铺的文件名列表，**不区分�
   "stage": "sampling",
   "progress": 0.42,
   "created_at": "2026-09-22T16:40:00+08:00",
+  "mode": "I2VA",
+  "prompt": {
+    "description": "画面描述",
+    "soundscape": "",
+    "music": ""
+  },
   "normalized": { "...": "同提交时" },
   "outputs": [],
   "failure_reason": null
 }
 ```
+
+`mode` 与 `prompt` **原样回显提交时的值**（2026-09-28 M2R4 加入）。
+队列页要用画面描述区分任务 —— 几个任务的参数完全可以一模一样。
+⚠️ `prompt` 是**用户填的原文**：环境声留空时这里是 `""`，
+不是网关送给模型时替换成的 `N/A`。
 
 `state`：`queued` / `preparing` / `submitted` / `running` / `postprocessing` /
 `done` / `failed` / `cancelled`
@@ -258,11 +269,16 @@ WebSocket 事件，而 M1 只做轮询（执行文档 §1）。网关靠 ComfyUI
 GET /v1/jobs?state=running&limit=20
 ```
 
-`state` 可选，给了就只返回该状态的任务。`limit` 可选，默认 50，上限 200。
+`state` 可选，给了就只返回该状态的任务。`limit` 可选，默认 20，上限 200
+（2026-09-28 按实现更正，原来写的 50 与实现不符）。
 
 ```json
-{ "items": [ { "job_id": "...", "state": "...", "...": "同 GET /v1/jobs/{job_id}" } ] }
+{ "items": [ { "job_id": "...", "state": "...", "...": "同 GET /v1/jobs/{job_id}" } ],
+  "total": 3 }
 ```
+
+`total` 是按 `state` 过滤后、**被 `limit` 截断前**的条数 —— 没有它，
+App 不知道列表有没有被截掉。
 
 ⚠️ **外面套一层 `items`，不要直接返回数组。** 以后要加总数或分页游标时，
 裸数组没有地方放，而改形状意味着两端一起改。
@@ -278,10 +294,16 @@ GET /v1/jobs?state=running&limit=20
 | 任务当前状态 | 结果 |
 |---|---|
 | `queued` / `preparing` | 直接变 `cancelled`，不会被送去 ComfyUI |
-| `submitted` / `running` | 网关请求 ComfyUI 中断，任务变 `cancelled` |
+| `submitted` / `running` | 网关请求 ComfyUI 中断；**返回时状态可能还不是 `cancelled`**，见下 |
+| `postprocessing` | **409**，已经在收尾，不能取消 |
 | `done` / `failed` / `cancelled` | **409**，已经是终态了 |
 
-任务不存在返回 404。
+任务不存在返回 404。网关要发中断但连不上 ComfyUI 时返回 **502**，任务状态不变。
+
+⚠️ **取消运行中的任务是异步的**（2026-09-28 按实现更正）：中断请求发出后，
+终态由网关后台的轮询循环落下，所以这个接口返回的对象**可能还是 `running`**。
+App 收到 200 之后要**继续查询**直到终态，中间显示「正在取消」，
+不要把 200 当成「已经取消完了」。
 
 ⚠️ **取消运行中的任务有一个网关必须处理的细节。** ComfyUI 的中断接口
 **没有参数，中断的是它当前正在跑的那一个**，不是按任务 id 取消。

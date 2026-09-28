@@ -134,6 +134,33 @@ def test_the_job_detail_has_the_contract_shape():
     assert body["progress"] is None
 
 
+def test_the_job_echoes_mode_and_the_prompt_as_the_user_typed_it():
+    """详情与列表都原样回显 mode 与 prompt（契约 §2，M2R4 加入）。
+
+    ⚠️ 重点是留空的背景音乐：送给模型时它被换成 `N/A`，
+    但回显的必须是用户填的原文 `""` —— App 的队列页显示的是「你写了什么」，
+    显示 `N/A` 会让用户以为自己填过这个词。
+    """
+    client, _ = make_client()
+    payload = {
+        "type": "h3_video",
+        "mode": "T2VA",
+        "prompt": {"description": "  海浪拍打礁石  ", "soundscape": "浪声", "music": ""},
+        "duration_seconds": 5,
+    }
+    with client:
+        job_id = client.post("/v1/jobs", json=payload).json()["job_id"]
+        detail = client.get(f"/v1/jobs/{job_id}").json()
+        listed = client.get("/v1/jobs").json()["items"][0]
+
+    expected_prompt = {"description": "  海浪拍打礁石  ", "soundscape": "浪声", "music": ""}
+    assert detail["mode"] == "T2VA"
+    assert detail["prompt"] == expected_prompt
+    # 列表与详情是同一个形状（契约 §2），新字段也不例外。
+    assert listed["mode"] == "T2VA"
+    assert listed["prompt"] == expected_prompt
+
+
 def test_listing_jobs_wraps_items_and_reports_the_untruncated_total():
     """列表外面套一层 items，并回报截断前的总数。
 
