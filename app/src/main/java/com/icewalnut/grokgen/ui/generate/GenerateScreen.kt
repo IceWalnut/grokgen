@@ -71,6 +71,8 @@ fun GenerateScreen(
     onPickFirstFrame: () -> Unit,
     onSubmit: () -> Unit,
     onBack: () -> Unit,
+    onOpenQueue: () -> Unit,
+    onOpenJob: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val spacing = GrokgenTheme.spacing
@@ -85,7 +87,7 @@ fun GenerateScreen(
             .systemBarsPadding()
             .verticalScroll(rememberScrollState()),
     ) {
-        Header(onBack = onBack)
+        Header(onBack = onBack, onOpenQueue = onOpenQueue)
 
         Spacer(Modifier.height(spacing.md))
         ModeSwitch(
@@ -137,7 +139,7 @@ fun GenerateScreen(
 
             (state.phase as? SubmitPhase.Finished)?.let { finished ->
                 Spacer(Modifier.height(spacing.xl))
-                SubmitResult(finished)
+                SubmitResult(finished, onOpenJob)
             }
         }
 
@@ -146,11 +148,11 @@ fun GenerateScreen(
 }
 
 @Composable
-private fun Header(onBack: () -> Unit) {
+private fun Header(onBack: () -> Unit, onOpenQueue: () -> Unit) {
     val spacing = GrokgenTheme.spacing
     val colors = MaterialTheme.colorScheme
     Row(
-        modifier = Modifier.padding(start = spacing.sm, top = spacing.sm, end = spacing.gutter),
+        modifier = Modifier.fillMaxWidth().padding(start = spacing.sm, top = spacing.sm, end = spacing.gutter),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
@@ -166,7 +168,21 @@ private fun Header(onBack: () -> Unit) {
             text = "新建视频",
             style = MaterialTheme.typography.headlineSmall,
             color = colors.onBackground,
+            modifier = Modifier.weight(1f),
         )
+        // 视觉稿右上角的「队列」入口。M2 不在这里显示任务数 —— 那要这一页也去轮询，
+        // 而生成页不需要为了一个角标常驻发请求。
+        Box(
+            modifier = Modifier
+                .heightIn(min = 44.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(colors.surface)
+                .clickable(onClick = onOpenQueue)
+                .padding(horizontal = spacing.md),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("队列", style = MaterialTheme.typography.bodyMedium, color = colors.onBackground)
+        }
     }
 }
 
@@ -472,7 +488,7 @@ private fun SubmitArea(problem: FormProblem?, submitting: Boolean, onSubmit: () 
 }
 
 @Composable
-private fun SubmitResult(finished: SubmitPhase.Finished) {
+private fun SubmitResult(finished: SubmitPhase.Finished, onOpenJob: (String) -> Unit) {
     val colors = MaterialTheme.colorScheme
     val spacing = GrokgenTheme.spacing
     val status = GrokgenTheme.status
@@ -489,9 +505,18 @@ private fun SubmitResult(finished: SubmitPhase.Finished) {
     val job = outcome.job
     ResultCard(
         title = "已提交 · ${job.jobId}",
-        detail = "任务已进入队列。进度要到下一版的队列页才能看。",
+        detail = "任务已进入队列。",
         dotColor = status.queued,
     )
+    Spacer(Modifier.height(spacing.sm))
+    Button(
+        onClick = { onOpenJob(job.jobId) },
+        shape = RoundedCornerShape(12.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = colors.surface, contentColor = colors.onBackground),
+        modifier = Modifier.fillMaxWidth().height(52.dp),
+    ) {
+        Text("查看进度 →", style = MaterialTheme.typography.titleMedium)
+    }
 
     Spacer(Modifier.height(spacing.xl))
     Text("网关实际使用的参数", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)

@@ -71,4 +71,11 @@ class NormalizedSummaryTest {
         val sampling = summarizeNormalized(job.normalized, turbo = false).first { it.label == "采样" }
         assertEquals("euler · 8 步 · 标准", sampling.value)
     }
+
+    @Test
+    fun `不知道档位时不猜 只显示 sampler 与步数`() {
+        val job = GatewayJson.decodeFromString(JobSubmittedDto.serializer(), submitResponse)
+        val sampling = summarizeNormalized(job.normalized, turbo = null).first { it.label == "采样" }
+        assertEquals("euler · 8 步", sampling.value)
+    }
 }

@@ -17,8 +17,11 @@ data class SummaryRow(val label: String, val value: String)
  *
  * @param turbo 用户提交时选的档位。`normalized` 里没有 turbo 这个字段，
  *   但 sampler/steps/shift 就是那一档的值，并排显示用户才对得上号。
+ *   **不知道时传 `null`**（例如从任务详情进来）：那一行只显示 sampler 与步数。
+ *   ⚠️ **不要按步数去猜是不是 Turbo** —— 那等于在 App 里再抄一份网关的采样档位规则，
+ *   网关改了档位 App 就会报错的名字。
  */
-fun summarizeNormalized(normalized: NormalizedParamsDto, turbo: Boolean): List<SummaryRow> = listOf(
+fun summarizeNormalized(normalized: NormalizedParamsDto, turbo: Boolean?): List<SummaryRow> = listOf(
     SummaryRow("分辨率", "${normalized.width} × ${normalized.height}"),
     SummaryRow(
         "时长",
@@ -27,7 +30,14 @@ fun summarizeNormalized(normalized: NormalizedParamsDto, turbo: Boolean): List<S
     SummaryRow("种子", normalized.seed.toString()),
     SummaryRow(
         "采样",
-        "${normalized.sampler} · ${normalized.steps} 步 · ${if (turbo) "Turbo" else "标准"}",
+        buildString {
+            append("${normalized.sampler} · ${normalized.steps} 步")
+            when (turbo) {
+                true -> append(" · Turbo")
+                false -> append(" · 标准")
+                null -> Unit
+            }
+        },
     ),
     SummaryRow(
         "shift",

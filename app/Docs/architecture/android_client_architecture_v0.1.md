@@ -44,9 +44,10 @@ M2R1 实测推翻过两条：连接失败的分档（§5.0）、以及模型加�
 把上游那段一起砍掉的话，`stage` 会永远是空的，
 而需求 F2 明确要求把 `loading_model` 这一段单独显示出来。
 
-⚠️ **「网关这一侧必须连 ComfyUI 的 ws 才拿得到 stage」这一条还没有核实过** ——
-它是从网关目前已实现的三个 ComfyUI 接口推出来的，
-没有去 ComfyUI 源码里确认是否存在别的 HTTP 途径。M2 开工时先确认一次（§12）。
+✅ **「网关这一侧必须连 ComfyUI 的 ws 才拿得到 stage」已核实**（2026-09-28，M2R4）：
+读了服务器上 ComfyUI（`3c80da7f`）的路由表，新增的 `/api/jobs` 系列只给状态与时间，
+步数只在 ws 的 `progress` 事件里、当前节点只在 `executing` 事件里。
+网关连 ws 另开一轮做（`Docs/TODO.md`）。
 
 ### 1.2 为什么下游选轮询
 
@@ -540,7 +541,7 @@ data class StatusColors(
 
 | 结论 | 怎么核对 | 现在的状态 |
 |---|---|---|
-| `stage`/`progress` 只能从 ComfyUI 的 ws 拿 | 读 ComfyUI 的路由表，确认没有返回"当前执行节点/步数"的 HTTP 接口 | ❌ **未核实**，§1.1 |
+| `stage`/`progress` 只能从 ComfyUI 的 ws 拿 | 读 ComfyUI 的路由表，确认没有返回"当前执行节点/步数"的 HTTP 接口 | ✅ **已核实**（2026-09-28，ComfyUI `3c80da7f`）：新增的 `/api/jobs` 系列只有状态与时间，步数只在 ws 的 `progress` 事件、当前节点只在 `executing` 事件。见 M2R4 总结 §4.1 |
 | 一次 5 秒视频热启动 75 秒 / 显存清空后 94 秒 | M1R7 冒烟实测，各 1 次 | ✅ 已实测 |
 | 采样 8 步 | 网关 turbo profile 的定义 + M1R7 实测配置 | ✅ 已确认 |
 | ComfyUI 每步推一个进度事件 | 抓一次 ws 事件流 | ❌ **未核实**，§1.2 |
