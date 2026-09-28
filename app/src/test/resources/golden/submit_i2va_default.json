@@ -1,0 +1,18 @@
+{
+  "type": "h3_video",
+  "mode": "I2VA",
+  "prompt": {
+    "description": "一辆红色跑车在夜间湿滑的城市街道上加速驶过",
+    "soundscape": "引擎低吼，轮胎碾过积水",
+    "music": "低沉的合成器"
+  },
+  "first_frame_asset_id": "grokgen/img_20260924_165801_fc9609.png",
+  "last_frame_asset_id": null,
+  "width": null,
+  "height": null,
+  "duration_seconds": 5.0,
+  "turbo": true,
+  "steps": null,
+  "seed": null,
+  "loras": []
+}

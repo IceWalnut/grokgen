@@ -77,5 +77,11 @@ scripts/smoke_m1.sh             # 端到端冒烟：上传 → 生成 → 取回
 
 ⚠️ **不要在服务器上改代码** —— 部署用 `git reset --hard origin/main`。
 
+App 在开发机上构建。⚠️ 系统默认 `java` 是 11 且保持不动，所以要显式指定 JDK 17：
+
+```bash
+cd app && JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ./gradlew build   # 构建 + 单元测试
+```
+
 开发机没有 GPU。网关里只有「调用 ComfyUI」那一块依赖它，
 **那块必须放在一个接口后面**，否则本地一个单元测试都跑不了。

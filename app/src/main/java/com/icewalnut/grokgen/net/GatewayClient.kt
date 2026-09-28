@@ -1,6 +1,5 @@
 package com.icewalnut.grokgen.net
 
-import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import retrofit2.Retrofit
@@ -14,16 +13,6 @@ import java.util.concurrent.TimeUnit
  * 是**唯二**允许 import HTTP 库的地方（VS-30）。
  */
 object GatewayClient {
-
-    /**
-     * ⚠️ `ignoreUnknownKeys = true`：网关将来往响应里加字段，不该让 App 崩。
-     *
-     * ⚠️ 但**不要**顺手加 `coerceInputValues` 之类的宽容开关 ——
-     * 那会把「字段类型不对」这种真错误也吞掉，而契约对不上正是要看见的东西。
-     */
-    private val json = Json {
-        ignoreUnknownKeys = true
-    }
 
     /**
      * 连接超时故意设得短。
@@ -87,7 +76,8 @@ object GatewayClient {
         Retrofit.Builder()
             .baseUrl(baseUrl)
             .client(okHttp)
-            .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+            // ⚠️ 用共享的 GatewayJson，不在这里另配 —— 理由见那个文件。
+            .addConverterFactory(GatewayJson.asConverterFactory("application/json".toMediaType()))
             .build()
             .create(GatewayApi::class.java)
 }

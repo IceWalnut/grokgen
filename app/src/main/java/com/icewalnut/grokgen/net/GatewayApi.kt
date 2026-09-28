@@ -1,9 +1,12 @@
 package com.icewalnut.grokgen.net
 
 import com.icewalnut.grokgen.net.dto.HealthDto
+import com.icewalnut.grokgen.net.dto.JobSubmitRequestDto
+import com.icewalnut.grokgen.net.dto.JobSubmittedDto
 import com.icewalnut.grokgen.net.dto.UploadedImageDto
 import okhttp3.MultipartBody
 import retrofit2.Response
+import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.Multipart
 import retrofit2.http.POST
@@ -14,7 +17,8 @@ import retrofit2.http.Part
  *
  * ⚠️ 契约改了，先改契约文档，再改这里，再改用它的地方 —— 顺序不能反。
  *
- * M2R1 只接一个接口。上传是 M2R2，任务那五个是 M2R3/R4。
+ * M2R1 接了健康检查，M2R2 接了上传，M2R3 接了提交任务；
+ * 任务的查询、列表、取消是 M2R4，取回视频是 M2R5。
  */
 interface GatewayApi {
 
@@ -41,4 +45,13 @@ interface GatewayApi {
     @Multipart
     @POST("v1/uploads/image")
     suspend fun uploadImage(@Part file: MultipartBody.Part): Response<UploadedImageDto>
+
+    /**
+     * 提交一个生成任务，立刻返回 `queued`（不等生成开始）。
+     *
+     * ⚠️ 请求体的每个键都必须写出来，留空的写 `null` —— 见 [JobSubmitRequestDto]。
+     * ⚠️ 这个调用**有副作用**：重复调用 = 多一个任务。不要重试，见 [JobSubmitter]。
+     */
+    @POST("v1/jobs")
+    suspend fun submitJob(@Body body: JobSubmitRequestDto): Response<JobSubmittedDto>
 }

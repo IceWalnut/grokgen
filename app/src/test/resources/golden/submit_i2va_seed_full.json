@@ -1,0 +1,18 @@
+{
+  "type": "h3_video",
+  "mode": "I2VA",
+  "prompt": {
+    "description": "女孩在樱花树下转身微笑",
+    "soundscape": "微风，远处的鸟鸣",
+    "music": "轻快的钢琴"
+  },
+  "first_frame_asset_id": "grokgen/img_20260928_101500_a1b2c3.jpg",
+  "last_frame_asset_id": null,
+  "width": null,
+  "height": null,
+  "duration_seconds": 8.0,
+  "turbo": false,
+  "steps": null,
+  "seed": 849302114,
+  "loras": []
+}

@@ -35,6 +35,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.icewalnut.grokgen.data.LocalImageFacts
+import com.icewalnut.grokgen.model.FirstFrameImage
 import com.icewalnut.grokgen.net.UploadOutcome
 import com.icewalnut.grokgen.net.dto.UploadedImageDto
 import com.icewalnut.grokgen.ui.component.UriThumbnail
@@ -47,6 +48,9 @@ import com.icewalnut.grokgen.ui.theme.GrokgenTheme
  * ⭐ 这一页产出的是一个 `asset_id` 字符串 —— 参考图的三个来源
  * （手机上传 / 媒体库挑 / SD 现生成）**在网关那里收敛成同一个东西**，
  * 所以 M3、M5 加进来时生成页一个字都不用改。
+ *
+ * @param onUseImage 上传成功后「用这张图」的去处（M2R3 起是生成页的首帧图槽）。
+ *   为 `null` 时不显示那个按钮。
  */
 @Composable
 fun UploadScreen(
@@ -55,6 +59,7 @@ fun UploadScreen(
     onUpload: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    onUseImage: ((FirstFrameImage) -> Unit)? = null,
 ) {
     val spacing = GrokgenTheme.spacing
     val colors = MaterialTheme.colorScheme
@@ -122,12 +127,46 @@ fun UploadScreen(
             when (val phase = state.phase) {
                 UploadPhase.Transcoding -> TranscodingRow()
                 is UploadPhase.Uploading -> UploadingRow(phase)
-                else -> UploadButton(enabled = state.pickedUri != null, onUpload = onUpload)
+                // 传成功之后禁用：同一张图再传一次只会在服务器上多一份，
+                // 而且两个强调色按钮并排会抢主次（M2R3 真机上看到的）。
+                // 重新选图会重置状态（UploadViewModel.onPicked），按钮随之恢复。
+                else -> UploadButton(
+                    enabled = state.pickedUri != null && state.outcome !is UploadOutcome.Uploaded,
+                    onUpload = onUpload,
+                )
             }
 
             state.outcome?.let {
                 Spacer(Modifier.height(spacing.xl))
                 UploadOutcomeCard(it, state.localFacts)
+            }
+
+            val uploaded = state.outcome as? UploadOutcome.Uploaded
+            val pickedUri = state.pickedUri
+            if (uploaded != null && pickedUri != null && onUseImage != null) {
+                Spacer(Modifier.height(spacing.lg))
+                Button(
+                    onClick = {
+                        onUseImage(
+                            FirstFrameImage(
+                                // ⚠️ asset_id 原样带走，不解析、不拼。
+                                assetId = uploaded.image.assetId,
+                                // 用**服务器**读到的尺寸 —— 画布是按它推的，不是按本机那组。
+                                width = uploaded.image.width,
+                                height = uploaded.image.height,
+                                uri = pickedUri.toString(),
+                            ),
+                        )
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = colors.primary,
+                        contentColor = colors.onPrimary,
+                    ),
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                ) {
+                    Text("用这张图做首帧 →", style = MaterialTheme.typography.titleMedium)
+                }
             }
         }
 

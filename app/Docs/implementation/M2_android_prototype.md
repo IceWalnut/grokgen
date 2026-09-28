@@ -354,6 +354,15 @@ ContextPack §4.1 那个坑（curl 要带 `--noproxy '*'`）**只存在于开发
 项目通过 Gradle toolchain 声明 JDK 17。
 ⚠️ **不要 `update-alternatives` 切换全局 java**（`AGENTS.md` §4）。
 
+⚠️ **但 toolchain 管不了跑 Gradle 本身的那个 JVM**（M2R3 撞到）：直接 `./gradlew`
+会用 Java 11，AGP 报「requires Java 17」失败。每条命令前带上 `JAVA_HOME`：
+
+```bash
+JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ./gradlew build
+```
+
+只跑某个测试类用 `testDebugUnitTest --tests '*类名*'` —— 聚合任务 `test` 不认 `--tests`。
+
 ### 4.5 `stage` 与 `progress` 现在恒为空，不是 bug
 
 契约 §2 写明了。**App 不许把它们为空当成异常。**

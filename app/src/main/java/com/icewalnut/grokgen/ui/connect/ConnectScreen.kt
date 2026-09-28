@@ -49,7 +49,7 @@ fun ConnectScreen(
     state: ConnectUiState,
     onInputChange: (String) -> Unit,
     onConnect: () -> Unit,
-    onOpenUpload: () -> Unit,
+    onOpenGenerate: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val spacing = GrokgenTheme.spacing
@@ -152,13 +152,13 @@ fun ConnectScreen(
             OutcomeCard(state.outcome)
         }
 
-        // ⚠️ 只有网关**和 ComfyUI 都在线**时才让进上传页。
-        //    上传是经 ComfyUI 落盘的 —— ComfyUI 挂着时传必然 502，
-        //    **提前拦住比让用户白传十几 MB 强**。
+        // ⚠️ 只有网关**和 ComfyUI 都在线**时才让进生成页。
+        //    图生视频要先传首帧图，而上传是经 ComfyUI 落盘的 —— ComfyUI 挂着时
+        //    传必然 502，**提前拦住比让用户白传十几 MB 强**。
         if (state.outcome is ConnectionOutcome.Healthy) {
             Spacer(Modifier.height(spacing.lg))
             Button(
-                onClick = onOpenUpload,
+                onClick = onOpenGenerate,
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = colors.surface,
@@ -166,12 +166,12 @@ fun ConnectScreen(
                 ),
                 modifier = Modifier.fillMaxWidth().height(52.dp),
             ) {
-                Text("选一张图上传 →", style = MaterialTheme.typography.titleMedium)
+                Text("去生成视频 →", style = MaterialTheme.typography.titleMedium)
             }
         } else if (state.outcome is ConnectionOutcome.ComfyDown) {
             Spacer(Modifier.height(spacing.lg))
             Text(
-                text = "ComfyUI 没起来，现在传图会失败 —— 图是经它落盘的。",
+                text = "ComfyUI 没起来，现在传图和生成都会失败 —— 图是经它落盘的，视频也是它生成的。",
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.onSurfaceVariant,
             )
