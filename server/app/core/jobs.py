@@ -18,21 +18,37 @@ M1 的简化：状态只存在内存里，**网关一重启就全丢**。持久�
 import asyncio
 import contextlib
 import logging
+import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 
 from app.comfy.client import (
     ComfyClient,
+    ComfyEvent,
     ComfyUnreachable,
     ComfyValidationError,
     JobRecord,
     OutputFile,
 )
 from app.comfy.workflows.validation import check_workflow
+from app.core.progress import (
+    UNKNOWN_STAGE,
+    Stage,
+    StageReading,
+    event_prompt_id,
+    reading_after_event,
+)
 from app.models.video_job import NormalizedParams, VideoJobRequest
 
 logger = logging.getLogger(__name__)
+
+#: ws 断开后第一次重连前等多久，秒。之后每次失败翻倍，直到 `EVENT_RECONNECT_MAX_SECONDS`。
+EVENT_RECONNECT_INITIAL_SECONDS = 1.0
+#: 重连间隔的上限，秒。ComfyUI 进程重启到端口能应答实测要 66 秒（M2R1），
+#: 30 秒的上限意味着它回来之后最多再等 30 秒进度就恢复，而这期间不会每秒打一次日志。
+EVENT_RECONNECT_MAX_SECONDS = 30.0
 
 
 class JobState(str, Enum):
@@ -189,11 +205,11 @@ class Job:
         normalized: 归一化后的真实参数，**要原样回给 App**。
         created_at: 创建时刻，带时区。列表按它倒序。
         state: 当前状态。**只能由 `JobManager._set_state` 修改。**
-        stage: `running` 时的细分阶段。
-            ⚠️ **M1 阶段恒为 `None`** —— 它的数据来自 ComfyUI 的 WebSocket 事件，
-            而 M1 只做轮询。`GET /queue` 只能回答「是不是在跑」，
-            回答不了「跑到哪一段」。M2 接 ws 后才会有值。
-        progress: 采样进度百分比。同上，M1 恒为 `None`。
+        stage: 任务占着 GPU（`submitted` / `running`）时的细分阶段，来自 ComfyUI 的 WebSocket 事件
+            （M2R4b 起，映射见 `core/progress.py`）。**只由 `_apply_event` 与 `_set_state` 修改。**
+            ⚠️ **为 `None` 是正常状态**：ws 没连上、刚重连还没等到下一条事件、或看到了认不出的节点。
+            任务一离开 `submitted` / `running` 就置空。
+        progress: 采样进度 0..1，只在 `stage` 为 `sampling` 时有值。
         prompt_id: ComfyUI 给的 id。取消与排障都要靠它。
         outputs: 产出的文件。
         failure_reason: 失败时的原因；其余情况为 `None`。
@@ -207,7 +223,7 @@ class Job:
     normalized: NormalizedParams
     created_at: datetime
     state: JobState = JobState.QUEUED
-    stage: str | None = None
+    stage: Stage | None = None
     progress: float | None = None
     prompt_id: str | None = None
     outputs: list[OutputFile] = field(default_factory=list)
@@ -282,6 +298,8 @@ class JobManager:
         poll_interval_seconds: float = 1.0,
         timeout_seconds: float | None = None,
         preflight: bool = True,
+        event_reconnect_initial_seconds: float = EVENT_RECONNECT_INITIAL_SECONDS,
+        event_reconnect_max_seconds: float = EVENT_RECONNECT_MAX_SECONDS,
     ) -> None:
         """构造任务管理器。
 
@@ -293,11 +311,25 @@ class JobManager:
                 默认为什么留空见 `core/config.py` 上的说明。
             preflight: 提交前是否拉一次 `/object_info` 对图做形状预检。
                 默认开 —— 一次提交错图要付几分钟模型加载的代价（M1R3 的结论）。
+            event_reconnect_initial_seconds / event_reconnect_max_seconds:
+                进度 ws 断开后的重连退避，秒：从前者开始每次失败翻倍，封顶于后者。
+                测试传 0 让重连立刻发生。
         """
         self._comfy = comfy
         self._poll_interval = poll_interval_seconds
         self._timeout = timeout_seconds
         self._preflight = preflight
+        self._reconnect_initial = event_reconnect_initial_seconds
+        self._reconnect_max = event_reconnect_max_seconds
+
+        # ⚠️ 提交任务与连 ws 必须用**同一个** client_id：ComfyUI 只把用这个 id 提交的任务的
+        #    进度发给这条连接。每个网关进程一个，随机后缀免得与用户在网页上开的会话撞名。
+        self._client_id = f"grokgen-gateway-{uuid.uuid4().hex[:12]}"
+        self._events_task: asyncio.Task | None = None
+        #: 进度 ws 此刻是否连着（至少收到过一条消息）。只用于日志与排障，不影响任务推进。
+        self.events_connected = False
+        #: 进度 ws 断开（含从未连上）被处理过几次。测试用它等「断线已处理」。
+        self.event_disconnects = 0
 
         self._jobs: dict[str, Job] = {}
         self._transitions: list[Transition] = []
@@ -312,9 +344,16 @@ class JobManager:
     # ---- 生命周期 ----
 
     async def start(self) -> None:
-        """建队列并起 worker 协程。由 FastAPI 的 lifespan 调用。"""
+        """建队列，起 worker 协程与进度事件协程。由 FastAPI 的 lifespan 调用。
+
+        两个协程互不依赖：进度事件协程连不上 ComfyUI 的 ws 时只会不停退避重连，
+        **不影响 worker 推进任务**（执行文档 M2R4b §2 第 1 条）。
+        """
         self._queue = asyncio.Queue()
         self._worker_task = asyncio.create_task(self._worker(), name="grokgen-job-worker")
+        self._events_task = asyncio.create_task(
+            self._consume_events(), name="grokgen-comfy-events"
+        )
 
     async def aclose(self) -> None:
         """停掉 worker，不接新任务。
@@ -328,11 +367,13 @@ class JobManager:
             无。
         """
         self._closing = True
-        if self._worker_task is not None:
-            self._worker_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._worker_task
-            self._worker_task = None
+        for task in (self._worker_task, self._events_task):
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+        self._worker_task = None
+        self._events_task = None
 
         for job in self._jobs.values():
             if job.state in GPU_OCCUPYING_STATES:
@@ -505,14 +546,29 @@ class JobManager:
             asyncio.TimeoutError: 超时。
         """
         job = self.get(job_id)
+        await self.wait_until(lambda: job.state in states, timeout=timeout)
+        return job
+
+    async def wait_until(self, predicate: Callable[[], bool], timeout: float = 5.0) -> None:
+        """等到 `predicate()` 为真。**给测试用**，与 `wait_for` 同一个机制。
+
+        每次状态转移、每次 `stage`/`progress` 变化、每次进度 ws 断开都会叫醒一次等待方，
+        所以测试可以写「等 stage 变成 sampling」而不是 sleep 去赌。
+
+        Args:
+            predicate: 无参数的判断函数，在事件循环里同步调用。
+            timeout: 最多等多久，秒。
+
+        Raises:
+            asyncio.TimeoutError: 超时仍不为真。
+        """
 
         async def _wait() -> None:
             async with self._changed:
-                while job.state not in states:
+                while not predicate():
                     await self._changed.wait()
 
         await asyncio.wait_for(_wait(), timeout=timeout)
-        return job
 
     @property
     def transitions(self) -> list[Transition]:
@@ -547,9 +603,18 @@ class JobManager:
                 f"{job.job_id}: {job.state.value} → {state.value} 不是合法转移"
             )
         job.state = state
+        if state not in GPU_OCCUPYING_STATES:
+            # 细分阶段只在任务占着 GPU 时有意义（契约 §2）。离开之后还留着「采样中 100%」，
+            # App 在收尾中 / 完成之后就会看到一个过期的进度。
+            job.stage = None
+            job.progress = None
         for key, value in fields.items():
             setattr(job, key, value)
         self._record_transition(job, state)
+        await self._notify_changed()
+
+    async def _notify_changed(self) -> None:
+        """叫醒所有 `wait_until` / `wait_for` 的等待方。"""
         async with self._changed:
             self._changed.notify_all()
 
@@ -622,6 +687,115 @@ class JobManager:
         finished.sort(key=lambda j: j.created_at)
         for job in finished[: len(self._jobs) - MAX_RETAINED_JOBS]:
             del self._jobs[job.job_id]
+
+    # ---- 内部：进度事件 ----
+
+    async def _consume_events(self) -> None:
+        """常驻：连 ComfyUI 的 ws，把事件变成任务的 `stage` / `progress`；断了就退避重连。
+
+        流程说明：
+            1. `comfy.events(client_id)` 建一条连接并逐条产出事件；收到第一条即视为连上，
+               退避间隔复位；
+            2. 每条事件交给 `_apply_event`；
+            3. 连接因任何原因结束（`ComfyUnreachable`）⇒ 所有占着 GPU 的任务的 `stage` / `progress`
+               置空 —— 断线期间的事件 ComfyUI 不补发，留着旧值就是在报一个过期的进度；
+               然后等退避间隔再重连，间隔每次翻倍、封顶 `event_reconnect_max_seconds`；
+            4. 意料之外的异常同样按断线处理并记 `logger.exception` —— **这个循环退出了，
+               进度就再也不会有，而且没有任何报错**，和 worker 不能死是同一个道理。
+
+        ⚠️ **这里的任何失败都不许影响任务本身**：状态推进只看 worker 的 `/queue` + `/history` 轮询
+        （执行文档 M2R4b §2 第 1 条，VS-24）。
+
+        日志节奏：一次断线只在开始时记一条 warning（之后的重连失败记 debug），恢复时记一条 info，
+        免得 ComfyUI 停着的那几分钟里每 30 秒刷一条。
+
+        Returns:
+            无（正常情况下不返回，被 cancel 时结束）。
+        """
+        delay = self._reconnect_initial
+        outage_logged = False
+        while True:
+            try:
+                async for event in self._comfy.events(self._client_id):
+                    if not self.events_connected:
+                        self.events_connected = True
+                        delay = self._reconnect_initial
+                        if outage_logged:
+                            logger.info("ComfyUI 的进度 ws 已恢复")
+                        outage_logged = False
+                    await self._apply_event(event)
+                reason = "事件流正常结束"
+            except asyncio.CancelledError:
+                raise
+            except ComfyUnreachable as exc:
+                reason = str(exc)
+            except Exception as exc:  # noqa: BLE001 —— 见 docstring 第 4 条，这个循环不能死
+                logger.exception("处理 ComfyUI 进度事件时出现未预期的异常，按断线处理")
+                reason = repr(exc)
+
+            self.events_connected = False
+            await self._forget_all_stages()
+            if not outage_logged:
+                logger.warning(
+                    "ComfyUI 的进度 ws 断开（%s），任务照常推进但暂时没有细分阶段；%.1f 秒后重连",
+                    reason,
+                    delay,
+                )
+                outage_logged = True
+            else:
+                logger.debug("进度 ws 重连失败（%s），%.1f 秒后再试", reason, delay)
+            await asyncio.sleep(delay)
+            delay = min(max(delay * 2, self._reconnect_initial), self._reconnect_max)
+
+    async def _apply_event(self, event: ComfyEvent) -> None:
+        """把一条 ws 事件应用到它所属的任务上。
+
+        只处理**带 `prompt_id`、且那个 `prompt_id` 属于一个正占着 GPU 的任务**的事件；
+        其余一律忽略（别人的任务、插件广播、重连后补发的无 `prompt_id` 的 `executing` ——
+        理由见 `core/progress.py` 模块说明第 2 条）。
+
+        ⚠️ 已知窗口：`submit` 返回到 `prompt_id` 落到任务上之间的事件会被丢掉
+        （录制里是 `execution_start` 与第一条 `executing`，间隔毫秒级）。
+        丢掉的后果只是 `stage` 晚一个节点才出现。
+
+        Args:
+            event: ComfyUI 事件。
+
+        Returns:
+            无。`stage` / `progress` 变了才叫醒等待方。
+        """
+        prompt_id = event_prompt_id(event)
+        if prompt_id is None:
+            return
+        job = next(
+            (
+                j
+                for j in self._jobs.values()
+                if j.prompt_id == prompt_id and j.state in GPU_OCCUPYING_STATES
+            ),
+            None,
+        )
+        if job is None:
+            return
+
+        current = StageReading(stage=job.stage, progress=job.progress)
+        updated = reading_after_event(event, job.workflow, current)
+        if updated == current:
+            return
+        job.stage, job.progress = updated.stage, updated.progress
+        await self._notify_changed()
+
+    async def _forget_all_stages(self) -> None:
+        """ws 断开时：把所有占着 GPU 的任务的 `stage` / `progress` 置空，并给断线计数加一。
+
+        ⚠️ 计数加一之后无条件通知一次：测试靠 `event_disconnects` 等到「断线已经被处理」
+        这件事本身，哪怕这次断线时没有任何任务在跑。
+        """
+        for job in self._jobs.values():
+            if job.state in GPU_OCCUPYING_STATES:
+                job.stage, job.progress = UNKNOWN_STAGE.stage, UNKNOWN_STAGE.progress
+        self.event_disconnects += 1
+        await self._notify_changed()
 
     # ---- 内部：worker ----
 
@@ -699,7 +873,8 @@ class JobManager:
                 await self._set_state(job, JobState.CANCELLED)
                 return
 
-            prompt_id = await self._comfy.submit(job.workflow, client_id=job.job_id)
+            # client_id 是整个网关共用的那一个，不是 job_id —— 进度事件靠它送到我们的 ws 上。
+            prompt_id = await self._comfy.submit(job.workflow, client_id=self._client_id)
         except ComfyValidationError as exc:
             # ⭐ VS-10：node_errors 必须原样带着，不要压成一句话。
             await self._fail(

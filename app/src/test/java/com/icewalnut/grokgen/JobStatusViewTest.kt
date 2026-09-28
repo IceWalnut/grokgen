@@ -60,7 +60,7 @@ class JobStatusViewTest {
         assertFalse(view.canCancel)
     }
 
-    // ---- stage / progress：现在恒为 null，但契约定义了它们有值时的样子 ----
+    // ---- stage / progress：可以为 null，有值时按契约显示 ----
 
     @Test
     fun `stage 为空时显示不带百分比的生成中 不是异常`() {

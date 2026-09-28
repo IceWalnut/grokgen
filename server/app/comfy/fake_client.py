@@ -4,9 +4,14 @@
 这是架构文档 §3 那条分层约束能成立的前提。
 """
 
+import asyncio
+import json
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from app.comfy.client import (
+    ComfyEvent,
     ComfyUnreachable,
     ComfyValidationError,
     GpuStats,
@@ -68,6 +73,7 @@ class FakeComfyClient:
         *,
         gated: bool = False,
         serial_guard: bool = True,
+        events_unreachable: bool = False,
     ) -> None:
         """构造替身。
 
@@ -87,6 +93,9 @@ class FakeComfyClient:
                 显存只够一个重任务，网关不该这么做。
                 它是串行判据的第二道、且**不依赖网关自己记账**的证据 ——
                 即使网关的转移日志写错了，越界提交也会在这个边界上炸。
+            events_unreachable: 为 `True` 时 `events` 每次一调就抛 `ComfyUnreachable`
+                （ws 永远连不上），**而 HTTP 那些方法照常工作** —— 用来测
+                「进度拿不到，任务仍然跑完」（VS-24）。
         """
         self._stats = stats or DEFAULT_STATS
         self._unreachable_reason = unreachable_reason
@@ -107,6 +116,15 @@ class FakeComfyClient:
         self.deleted_from_queue: list[str] = []
         # 任何时刻「已提交但还没结束」的任务数的峰值。串行判据断言它等于 1。
         self.max_outstanding_submits: int = 0
+
+        # ---- ws 事件 ----
+        self._events_unreachable = events_unreachable
+        # 测试推进来的事件与断线标记，`events()` 按顺序吐出。
+        self._event_script: asyncio.Queue = asyncio.Queue()
+        # `events()` 被调用了几次（= 建了几次连接），以及每次用的 client_id。
+        self.event_client_ids: list[str] = []
+        # `submit` 收到的 client_id。进度要能送达，它必须等于 `events()` 用的那个。
+        self.submit_client_ids: list[str] = []
 
     def _guard(self) -> None:
         """不可达模式下统一抛异常。"""
@@ -145,7 +163,7 @@ class FakeComfyClient:
 
         Args:
             workflow: 节点图，会被存进 `self.submitted` 供断言。
-            client_id: 忽略。
+            client_id: 记进 `self.submit_client_ids` 供断言。
 
         Returns:
             默认模式下是固定的 `"fake-prompt-id"`；
@@ -161,6 +179,7 @@ class FakeComfyClient:
         if self._reject_with is not None:
             raise ComfyValidationError("Prompt outputs failed validation", self._reject_with)
         self.submitted.append(workflow)
+        self.submit_client_ids.append(client_id)
         if not self._gated:
             return "fake-prompt-id"
 
@@ -341,6 +360,103 @@ class FakeComfyClient:
                 status="error",
                 messages=[["execution_cached", {"prompt_id": prompt_id}]],
             )
+
+    # ---- ws 事件 ----
+
+    async def events(self, client_id: str) -> AsyncIterator[ComfyEvent]:
+        """按测试推进来的剧本吐出事件；遇到断线标记就抛 `ComfyUnreachable` 结束这条「连接」。
+
+        与真实实现的约定一致：一次调用 = 一条连接，断开时抛异常，**不自己重连**。
+        剧本空着时就挂起等待（真实的 ws 在没有事件时也是挂着的），不会空转。
+
+        Args:
+            client_id: 记进 `self.event_client_ids`。
+
+        Returns:
+            异步迭代器，产出 `ComfyEvent`。
+
+        Raises:
+            ComfyUnreachable: 构造时给了 `unreachable_reason` 或 `events_unreachable`（一调就抛），
+                或剧本走到了一个 `push_disconnect()` 标记。
+        """
+        self.event_client_ids.append(client_id)
+        self._guard()
+        if self._events_unreachable:
+            raise ComfyUnreachable("替身：ComfyUI 的 WebSocket 连不上")
+        while True:
+            item = await self._event_script.get()
+            if item is _DISCONNECT:
+                raise ComfyUnreachable("替身：ComfyUI 的 WebSocket 断开了")
+            yield item
+
+    @property
+    def pending_events(self) -> int:
+        """剧本里还没被 `events()` 取走的条目数。为 0 时最后一条已经交给了消费方。"""
+        return self._event_script.qsize()
+
+    def push_event(self, event_type: str, data: dict) -> None:
+        """往剧本末尾加一条事件。"""
+        self._event_script.put_nowait(ComfyEvent(type=event_type, data=data))
+
+    def push_disconnect(self) -> None:
+        """往剧本末尾加一个断线标记：当前这条「连接」吐到这里就抛异常结束。"""
+        self._event_script.put_nowait(_DISCONNECT)
+
+    def replay_recording(self, path: Path, prompt_id: str) -> int:
+        """把一份真实录制（`tests/data/comfy_ws/*.jsonl`）整段推进剧本。
+
+        ⚠️ **原样回放，不挑拣** —— 插件广播、`progress_state`、不带 `prompt_id` 的 `status`、
+        重连后补发的无 `prompt_id` 的 `executing` 全都照推。替身只演好戏正是 ContextPack §4.011
+        记下的那个连续三轮的错误。
+
+        处理规则：
+            - 录制里任务的 `prompt_id`（录制时 ComfyUI 给的 UUID）全部换成 `prompt_id`，
+              换的是**整条消息里所有等于它的字符串**，包括嵌套在 `progress_state.nodes` 里的；
+            - 录制脚本的 `closing_for_reconnect_test` 标记 ⇒ `push_disconnect()`；
+            - 其余脚本标记与二进制帧不推（二进制帧在真实实现里就不会产出）。
+
+        Args:
+            path: 录制文件。
+            prompt_id: 替身这边这个任务的 `prompt_id`。
+
+        Returns:
+            推进剧本的条目数（事件 + 断线标记）。
+        """
+        records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+        recorded_prompt_id = next(
+            r["data"]["prompt_id"]
+            for r in records
+            if r["kind"] == "note" and r["data"].get("action") == "submitted"
+        )
+        pushed = 0
+        for record in records:
+            if record["kind"] == "note":
+                if record["data"].get("action") == "closing_for_reconnect_test":
+                    self.push_disconnect()
+                    pushed += 1
+                continue
+            if record["kind"] != "text":
+                continue
+            message = _replace_string(record["data"], recorded_prompt_id, prompt_id)
+            data = message.get("data")
+            self.push_event(message["type"], data if isinstance(data, dict) else {})
+            pushed += 1
+        return pushed
+
+
+#: 剧本里的断线标记。
+_DISCONNECT = object()
+
+
+def _replace_string(value: object, old: str, new: str) -> object:
+    """递归地把 JSON 值里所有等于 `old` 的字符串换成 `new`。"""
+    if isinstance(value, str):
+        return new if value == old else value
+    if isinstance(value, list):
+        return [_replace_string(v, old, new) for v in value]
+    if isinstance(value, dict):
+        return {k: _replace_string(v, old, new) for k, v in value.items()}
+    return value
 
 
 def finished_record(

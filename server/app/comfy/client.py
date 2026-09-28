@@ -5,10 +5,11 @@
 这条约束由 `tests/test_layering.py` 强制（VS-13）。
 
 M1R3 加了 `submit` / `history` / `object_info`，M1R4 加了 `upload_image`，
-M1R5 加了 `queue` / `interrupt` / `delete_queued`（任务状态机与取消要用）；
-`free` / `events` 在 M4（显存切换）与 M2（WebSocket 进度）再加。
+M1R5 加了 `queue` / `interrupt` / `delete_queued`（任务状态机与取消要用），
+M2R4b 加了 `events`（WebSocket 进度事件）；`free` 在 M4（显存切换）再加。
 """
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -128,6 +129,24 @@ class JobRecord:
             `status` 落在 `TERMINAL_COMFY_STATUSES` 里就是 `True`。
         """
         return self.status in TERMINAL_COMFY_STATUSES
+
+
+@dataclass(frozen=True)
+class ComfyEvent:
+    """ComfyUI 在 WebSocket 上发来的一条文本消息，形状 `{"type": ..., "data": {...}}`。
+
+    ⚠️ **这里不做任何过滤**：别的插件的广播（例如每秒一条的 `dasiwa.system_monitor`）、
+    不带 `prompt_id` 的 `status`、重连后补发的无 `prompt_id` 的 `executing`，都原样交给调用方。
+    哪些该用、哪些该丢是 `core/progress.py` 的事 —— 过滤写在传输层，替身就得再抄一份，
+    两份迟早对不上。见执行文档 `server/Docs/implementation/M2R4b_comfy_ws_progress.md` §5。
+
+    Attributes:
+        type: 消息类型，例如 `executing`、`progress`、`execution_success`。
+        data: 消息体。原消息的 `data` 不是 JSON 对象时为空 dict。
+    """
+
+    type: str
+    data: dict
 
 
 class ComfyUnreachable(Exception):
@@ -284,6 +303,27 @@ class ComfyClient(Protocol):
 
         Raises:
             ComfyUnreachable: ComfyUI 不可达。
+        """
+        ...
+
+    def events(self, client_id: str) -> AsyncIterator[ComfyEvent]:
+        """连上 ComfyUI 的 WebSocket，逐条产出它发来的文本消息。
+
+        ⚠️ **一次调用 = 一条连接。** 连接断开（对方关闭、网络中断、心跳超时）时迭代器**抛异常结束**，
+        不会自己重连 —— 重连的节奏由调用方决定（`JobManager` 的事件循环），这样替身也能演「断线」。
+
+        ⚠️ ComfyUI 只把**用这个 `client_id` 提交的任务**的进度发给这条连接，
+        所以 `submit` 必须用同一个 `client_id`。
+
+        Args:
+            client_id: 连接标识，与 `submit` 的 `client_id` 相同。
+
+        Returns:
+            异步迭代器。二进制帧（采样预览图）不产出。
+
+        Raises:
+            ComfyUnreachable: 连不上、握手超时、心跳超时、连接被关闭 —— 任何原因的「这条连接没了」。
+                **正常关闭也抛**，因为对调用方而言那同样意味着「进度暂时拿不到了」。
         """
         ...
 

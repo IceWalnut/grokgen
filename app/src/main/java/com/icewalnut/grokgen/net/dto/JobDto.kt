@@ -21,9 +21,12 @@ data class JobDto(
      * 枚举会让整条响应解析失败，而字符串只会让那一项显示成「认不出的状态」。
      */
     val state: String,
-    /** `running` 时的细分阶段。**现在恒为 `null`**（网关还没连 ComfyUI 的 WebSocket）。 */
+    /**
+     * 任务在跑时的细分阶段（网关从 ComfyUI 的 WebSocket 拿，M2R4b 起）。
+     * **可以为 `null`**：刚开始、网关与 ComfyUI 的实时连接中断、或网关认不出当前节点时都为空。
+     */
     val stage: String? = null,
-    /** 采样进度 0..1，只在 `sampling` 阶段有值。现在恒为 `null`。 */
+    /** 采样进度 0..1，只在 `sampling` 阶段有值。 */
     val progress: Double? = null,
     /** ISO 8601 带时区，例如 `2026-09-28T05:58:08.419404+00:00`。 */
     @SerialName("created_at") val createdAt: String,

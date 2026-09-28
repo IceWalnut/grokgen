@@ -1,11 +1,19 @@
-"""`ComfyClient` 的真实实现，通过 HTTP 与 ComfyUI 通信。
+"""`ComfyClient` 的真实实现，通过 HTTP 与 WebSocket 与 ComfyUI 通信。
 
-⚠️ 这是网关里唯一允许说 HTTP 的模块。别处出现 `httpx` 就是分层破了（VS-13）。
+⚠️ 这是网关里唯一允许说网络协议的模块。别处出现 `httpx` / `websockets` 就是分层破了（VS-13）。
 """
 
+import asyncio
+import json
+import logging
+from collections.abc import AsyncIterator
+
 import httpx
+from websockets.asyncio.client import connect as ws_connect
+from websockets.exceptions import WebSocketException
 
 from app.comfy.client import (
+    ComfyEvent,
     ComfyUnreachable,
     ComfyValidationError,
     GpuStats,
@@ -16,8 +24,27 @@ from app.comfy.client import (
 )
 from app.core.config import settings
 
+logger = logging.getLogger(__name__)
+
 # /object_info 有两三兆，/prompt 的执行可能排队，都不能用 health 那个 2 秒超时。
 LONG_TIMEOUT_SECONDS = 60.0
+
+# ---- WebSocket 的超时：每一项都显式给数值（执行文档 M2R4b §2 第 3 条） ----
+#
+# ⚠️ websockets 的这几个参数传 `None` 表示「不设」，和 httpx 的 `timeout=None` 是同一个坑。
+#    这台服务器的 WSL 用镜像网络，关闭端口上的连接是被丢弃而不是被拒绝（ContextPack §4.001），
+#    「不设」就会变成永远等下去。
+
+#: TCP 连接 + 握手的总时限，秒。ComfyUI 在本机，握手正常是毫秒级；5 秒是「肯定出事了」的界线。
+WS_OPEN_TIMEOUT_SECONDS = 5.0
+#: 多久发一次心跳，秒。连接半死（对方不再回应、但也没发关闭）时，只有心跳能发现它。
+WS_PING_INTERVAL_SECONDS = 10.0
+#: 发出心跳后多久没回应就判定连接已死，秒。最坏情况下从连接半死到发现是 10 + 10 = 20 秒。
+WS_PING_TIMEOUT_SECONDS = 10.0
+#: 主动关闭时等对方确认的时限，秒。
+WS_CLOSE_TIMEOUT_SECONDS = 2.0
+#: 单条消息的上限，字节。采样预览图可能有几百 KB；超限会断开连接，所以给足余量。
+WS_MAX_MESSAGE_BYTES = 16 * 1024 * 1024
 
 
 def _long_timeout() -> httpx.Timeout:
@@ -51,7 +78,16 @@ class HttpComfyClient:
     网关与 ComfyUI 跑在同一台机器上，所以默认打回环地址 `127.0.0.1:8188`。
     """
 
-    def __init__(self, base_url: str | None = None, timeout: float | None = None) -> None:
+    def __init__(
+        self,
+        base_url: str | None = None,
+        timeout: float | None = None,
+        *,
+        ws_url: str | None = None,
+        ws_open_timeout: float = WS_OPEN_TIMEOUT_SECONDS,
+        ws_ping_interval: float = WS_PING_INTERVAL_SECONDS,
+        ws_ping_timeout: float = WS_PING_TIMEOUT_SECONDS,
+    ) -> None:
         """建立到 ComfyUI 的长连接客户端。
 
         Args:
@@ -60,7 +96,14 @@ class HttpComfyClient:
                 这个值偏小是故意的：health 检查不该把请求挂住。
                 拉节点定义、提交任务这些慢接口各自覆盖成 `_long_timeout()` ——
                 **那个只放宽读超时，连接超时仍然是这里的值**，见该函数的说明。
+            ws_url: WebSocket 地址（不含 `clientId`）。默认取 `settings.resolved_comfy_ws_url()`。
+            ws_open_timeout / ws_ping_interval / ws_ping_timeout: WebSocket 的三个时限，秒，
+                含义见模块顶部同名常量。**只有测试会改它们**（把秒级缩到零点几秒）。
         """
+        self._ws_url = ws_url or settings.resolved_comfy_ws_url()
+        self._ws_open_timeout = ws_open_timeout
+        self._ws_ping_interval = ws_ping_interval
+        self._ws_ping_timeout = ws_ping_timeout
         self._client = httpx.AsyncClient(
             base_url=base_url or settings.comfy_base_url,
             timeout=timeout or settings.comfy_timeout_seconds,
@@ -376,3 +419,72 @@ class HttpComfyClient:
             outputs=outputs,
             messages=status.get("messages", []),
         )
+
+    async def events(self, client_id: str) -> AsyncIterator[ComfyEvent]:
+        """连 ComfyUI 的 `/ws?clientId=…`，逐条产出文本消息。一次调用 = 一条连接。
+
+        流程说明：
+            1. 建连接。连接 + 握手限时 `ws_open_timeout`；**`proxy=None` 不能去掉** ——
+               websockets 默认会读环境里的代理变量，而服务器上那个代理端口没有进程监听
+               （runbook §6.3），开发机的 `no_proxy` 又不含 `127.0.0.1`。
+               理由与 httpx 那边的 `trust_env=False` 相同；
+            2. 连接期间每 `ws_ping_interval` 秒发一次心跳，`ws_ping_timeout` 秒内没回应就断开 ——
+               这是发现「连接半死」的唯一办法；
+            3. 二进制帧（采样预览图）跳过；不是 JSON、或不是 `{"type": str, ...}` 形状的文本
+               记一条 warning 后跳过 —— 一条坏消息不值得断开整条连接；
+            4. 连接因任何原因结束（包括对方正常关闭）都抛 `ComfyUnreachable`。
+
+        Args:
+            client_id: 连接标识，必须与 `submit` 用的相同，否则收不到那些任务的进度。
+
+        Returns:
+            异步迭代器，产出 `ComfyEvent`。
+
+        Raises:
+            ComfyUnreachable: 连接建立失败或连接结束。异常信息里带 ws 地址与原因。
+        """
+        url = f"{self._ws_url}?clientId={client_id}"
+        try:
+            async with ws_connect(
+                url,
+                proxy=None,
+                open_timeout=self._ws_open_timeout,
+                ping_interval=self._ws_ping_interval,
+                ping_timeout=self._ws_ping_timeout,
+                close_timeout=WS_CLOSE_TIMEOUT_SECONDS,
+                max_size=WS_MAX_MESSAGE_BYTES,
+            ) as ws:
+                async for raw in ws:
+                    event = _parse_ws_message(raw)
+                    if event is not None:
+                        yield event
+        # ⚠️ Python 3.10 里 `asyncio.TimeoutError` 与内置 `TimeoutError` 是两个类（3.11 起才合并），
+        #    握手超时抛哪个取决于 websockets 内部用的哪个计时器，所以两个都接。
+        except (OSError, TimeoutError, asyncio.TimeoutError, WebSocketException) as exc:
+            raise ComfyUnreachable(f"ComfyUI 的 WebSocket {self._ws_url} 断开或连不上: {exc!r}") from exc
+        # `async for` 正常结束 = 对方正常关闭了连接。对调用方来说和断线一样：进度暂时拿不到了。
+        raise ComfyUnreachable(f"ComfyUI 关闭了 WebSocket 连接（{self._ws_url}）")
+
+
+def _parse_ws_message(raw: str | bytes) -> ComfyEvent | None:
+    """把 ws 上的一条原始消息解析成 `ComfyEvent`；不是可用的文本消息时返回 `None`。
+
+    Args:
+        raw: websockets 给的原始消息。文本帧是 `str`，二进制帧是 `bytes`。
+
+    Returns:
+        `ComfyEvent`；二进制帧、坏 JSON、形状不对的消息返回 `None`（后两种会记 warning）。
+    """
+    if isinstance(raw, bytes):
+        # 采样预览图。2026-09-28 的录制里没出现（那台 ComfyUI 没开预览），开了就会有。
+        return None
+    try:
+        message = json.loads(raw)
+    except ValueError:
+        logger.warning("ComfyUI 的 ws 发来一条不是 JSON 的文本消息，已跳过：%.200s", raw)
+        return None
+    if not isinstance(message, dict) or not isinstance(message.get("type"), str):
+        logger.warning("ComfyUI 的 ws 消息形状不是 {type, data}，已跳过：%.200s", raw)
+        return None
+    data = message.get("data")
+    return ComfyEvent(type=message["type"], data=data if isinstance(data, dict) else {})

@@ -56,9 +56,8 @@ private val TERMINAL_STATES = setOf("done", "failed", "cancelled")
  *
  * ⚠️ **格式化规则只写在这一处**（App 架构文档 §3.2）。
  *
- * ⚠️ **`stage` 与 `progress` 现在恒为 `null`**（网关还没连 ComfyUI 的 WebSocket），
- * 这时显示不带百分比的「生成中」—— **为空不是异常**。但这里已经按契约把它们有值的情况处理好，
- * 网关那一侧做完之后 App 不用再改。
+ * ⚠️ **`stage` 与 `progress` 可以为 `null`**（刚开始、网关与 ComfyUI 的实时连接中断、
+ * 或网关认不出当前节点时），这时显示不带百分比的「生成中」—— **为空不是异常**。
  *
  * @param progress 0..1。越界时夹到范围内，不信任网关一定给出合法值。
  */
@@ -106,8 +105,8 @@ private fun generatingView(stage: String?, progress: Double?): JobStatusView {
         }
         "decoding_video", "decoding_audio" -> "解码中" to null
         "encoding" -> "编码中" to null
-        // stage 为空（现在恒为空）或认不出：只说「生成中」，不编造细分阶段。
-        else -> "生成中" to "服务器正在生成。App 暂时拿不到细分阶段与百分比（要等网关接上 ComfyUI 的实时事件）。"
+        // stage 为空或认不出：只说「生成中」，不编造细分阶段。
+        else -> "生成中" to "服务器正在生成。暂时拿不到细分阶段与百分比（刚开始，或网关与 ComfyUI 的实时连接中断了），任务本身不受影响。"
     }
     val fraction = if (stage == "sampling") progress?.coerceIn(0.0, 1.0)?.toFloat() else null
     return JobStatusView(

@@ -179,7 +179,7 @@ private fun JobCard(job: JobDto, now: Instant, onClick: () -> Unit) {
                         modifier = Modifier.fillMaxWidth().height(3.dp),
                     )
                 } else {
-                    // stage/progress 现在恒为空：不确定进度条，表示「在动，但不知道到哪了」。
+                    // 没有百分比（不在采样、或 stage 为空）：不确定进度条，表示「在动，但不知道到哪了」。
                     LinearProgressIndicator(
                         color = colors.primary,
                         trackColor = colors.outline,

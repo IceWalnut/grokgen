@@ -21,6 +21,7 @@ class Settings(BaseSettings):
 
     Attributes:
         comfy_base_url: ComfyUI 地址。网关与它同机，所以默认走回环地址。
+        comfy_ws_url: ComfyUI 的 WebSocket 地址；留空由 `comfy_base_url` 推出。
         comfy_output_dir: ComfyUI 的输出根目录，媒体库要扫它。可含 `~`，
             用 `resolved_output_dir()` 取展开后的绝对路径。
         comfy_input_dir: ComfyUI 的输入目录。上传的图落在它的
@@ -39,6 +40,10 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="GROKGEN_", extra="ignore")
 
     comfy_base_url: str = "http://127.0.0.1:8188"
+    # ComfyUI 的 WebSocket 地址（进度事件从这里来）。留空时由 `comfy_base_url` 推出，
+    # 见 `resolved_comfy_ws_url()`。单独可配只为一件事：M2R4b 在服务器上验证「ws 中途断开」时，
+    # 要让一个临时网关实例经一个可以随时杀掉的转发去连 ws，而 HTTP 仍直连 ComfyUI。
+    comfy_ws_url: str | None = None
     comfy_output_dir: Path = Path("~/workspace/ComfyUI/output")
     comfy_input_dir: Path = Path("~/workspace/ComfyUI/input")
     comfy_timeout_seconds: float = 2.0
@@ -87,6 +92,22 @@ class Settings(BaseSettings):
     h3_unet: str = "h3ErosMax_beta5_fp8.safetensors"
     h3_clip: str = "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
     h3_turbo_lora: str = "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors"
+
+    def resolved_comfy_ws_url(self) -> str:
+        """ComfyUI 的 WebSocket 地址，不含 `clientId` 查询参数。
+
+        Returns:
+            配了 `comfy_ws_url` 就用它；否则把 `comfy_base_url` 的 `http` 换成 `ws`
+            （`https` 换成 `wss`）再接 `/ws`。
+        """
+        if self.comfy_ws_url:
+            return self.comfy_ws_url
+        base = self.comfy_base_url.rstrip("/")
+        if base.startswith("https://"):
+            return "wss://" + base[len("https://"):] + "/ws"
+        if base.startswith("http://"):
+            return "ws://" + base[len("http://"):] + "/ws"
+        raise ValueError(f"comfy_base_url 不是 http(s) 地址，推不出 ws 地址：{self.comfy_base_url}")
 
     def resolved_input_dir(self) -> Path:
         """把 `comfy_input_dir` 里的 `~` 展开成绝对路径。

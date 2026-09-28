@@ -8,6 +8,9 @@
 fastapi
 uvicorn[standard]
 httpx
+# 连 ComfyUI 的 WebSocket 拿进度事件（M2R4b）。uvicorn[standard] 也会带进来，
+# 但网关直接 import 它，不能依赖一个间接依赖碰巧存在。两台机器上现有版本都是 16.1.1。
+websockets
 pydantic
 pydantic-settings
 # FastAPI 接收 multipart 上传要它，不装就在导入期报错。

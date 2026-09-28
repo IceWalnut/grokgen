@@ -80,8 +80,9 @@ class JobResponse(BaseModel):
     Attributes:
         job_id: 任务 id。
         state: 当前状态。
-        stage: `running` 时的细分阶段。**M1 恒为 `null`**，见下。
-        progress: 采样进度。**M1 恒为 `null`**。
+        stage: 任务占着 GPU 时的细分阶段（`loading_model` / `sampling` / `decoding_video` /
+            `decoding_audio` / `encoding`），**可以为 `null`**，见下。
+        progress: 采样进度 0..1，只在 `stage` 为 `sampling` 时有值。
         created_at: 创建时刻，ISO 8601 带时区。
         mode: 提交时的生成模式（`T2VA` / `I2VA` / `FL2VA`），原样回显。
         prompt: 提交时的三段 prompt，**用户填的原文**。
@@ -93,9 +94,9 @@ class JobResponse(BaseModel):
         outputs: 产出的文件，未完成时是空列表。
         failure_reason: 失败原因，其余情况为 `null`。
 
-    ⚠️ **`stage` 与 `progress` 在 M1 阶段恒为 `null`。** 它们的数据来自
-    ComfyUI 的 WebSocket 事件，而 M1 只做轮询。网关靠队列接口只能区分到
-    「已提交」与「正在跑」，再细分不出来。**App 不要把它们为空当成异常。**
+    ⚠️ **`stage` 与 `progress` 为 `null` 是正常状态，App 不要当成异常。**
+    它们来自网关与 ComfyUI 之间的 WebSocket（M2R4b 起），ws 没连上、刚重连、
+    或看到认不出的节点时都为空 —— 任务本身照常推进，状态仍以 `state` 为准。
     """
 
     job_id: str
@@ -160,7 +161,7 @@ def _to_response(job: Job) -> JobResponse:
     return JobResponse(
         job_id=job.job_id,
         state=job.state.value,
-        stage=job.stage,
+        stage=job.stage.value if job.stage is not None else None,
         progress=job.progress,
         created_at=job.created_at.isoformat(),
         # 直接取请求对象上的值：它从提交起就没被改过，
